@@ -1,5 +1,5 @@
 import React from 'react';
-import { Copy, Check, FileCode, Save } from 'lucide-react';
+import { Copy, Check, FileCode } from 'lucide-react';
 
 interface CodeEditorProps {
   activeFile: string;

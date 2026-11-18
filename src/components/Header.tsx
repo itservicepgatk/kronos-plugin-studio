@@ -4,9 +4,7 @@ import {
   Upload, 
   Key, 
   Sparkles, 
-  Plus, 
   Layers, 
-  Zap, 
   Cpu
 } from 'lucide-react';
 import { GeminiModel } from '../types';

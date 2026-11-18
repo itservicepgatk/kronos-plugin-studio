@@ -6,8 +6,7 @@ import {
   Folder, 
   Plus, 
   Trash2, 
-  Settings2,
-  FileCheck
+  Settings2
 } from 'lucide-react';
 
 interface FileTreeProps {

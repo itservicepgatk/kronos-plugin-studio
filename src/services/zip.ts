@@ -29,11 +29,6 @@ export async function loadProjectFromZip(file: File): Promise<PluginProject> {
   for (const [relativePath, zipEntry] of Object.entries(loadedZip.files)) {
     if (!zipEntry.dir) {
       const content = await zipEntry.async('string');
-      // Normalize path (strip leading ./ or folder prefixes if whole archive was wrapped)
-      const cleanPath = relativePath.replace(/^(\.\/|[^/]+\/)/, (match, p1) => {
-        // Only strip if top-level directory wraps everything
-        return match.includes('src/') || match.includes('Cargo.toml') ? match : '';
-      });
       files[relativePath] = content;
 
       if (relativePath.endsWith('Cargo.toml')) {

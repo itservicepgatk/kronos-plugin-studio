@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Key, ExternalLink, X, Check } from 'lucide-react';
+import { Key, ExternalLink, X } from 'lucide-react';
 
 interface ApiKeyModalProps {
   isOpen: boolean;

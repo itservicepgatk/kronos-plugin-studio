@@ -6,8 +6,7 @@ import {
   Sparkles, 
   CheckCheck, 
   FileCode, 
-  Trash2,
-  AlertCircle
+  Trash2
 } from 'lucide-react';
 import { ChatMessage, GeminiModel } from '../types';
 

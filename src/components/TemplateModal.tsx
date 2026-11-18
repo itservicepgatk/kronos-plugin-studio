@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, X, Sparkles, ArrowRight } from 'lucide-react';
+import { Layers, X, ArrowRight } from 'lucide-react';
 import { STARTER_TEMPLATES } from '../constants/templates';
 import { PluginTemplate } from '../types';
 
