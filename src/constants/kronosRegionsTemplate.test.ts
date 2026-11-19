@@ -39,16 +39,19 @@ test('KRONOS Regions config.json defines Claim Wand, visualizer settings, and ra
   assert.equal(cfg.wand_tag, 'kronos_region_wand');
   assert.ok(cfg.visualizer_duration_seconds >= 15);
 
+  assert.equal(cfg.ranks.length, 20);
   const byId = Object.fromEntries(cfg.ranks.map((r) => [r.id, r]));
   assert.equal(byId.player.max_regions, 2);
   assert.equal(byId.player.can_toggle_pvp, false);
-  assert.equal(byId.vip.max_regions, 4);
+  assert.equal(byId.vip.max_regions, 3);
   assert.equal(byId.vip.can_toggle_pvp, true);
   assert.equal(byId.vip.can_toggle_fall_damage, false);
-  assert.equal(byId.premium.max_regions, 6);
+  assert.equal(byId.premium.max_regions, 4);
   assert.equal(byId.premium.can_toggle_fall_damage, true);
   assert.equal(byId.legend.max_regions, 10);
   assert.equal(byId.legend.can_toggle_entry, true);
+  assert.equal(byId.kronos.max_regions, 30);
+  assert.equal(byId.survival_admin.unlimited_regions, true);
   assert.equal(byId.owner.unlimited_regions, true);
 });
 

@@ -50,13 +50,16 @@ test('KRONOS Essentials v2 config.json validates rank limits, anti-combat, safe 
   assert.ok(parsed.rtp.max_radius > parsed.rtp.min_radius);
   assert.ok(parsed.rtp.drop_height > 0);
 
+  assert.equal(parsed.ranks.length, 20);
   const byId = Object.fromEntries(parsed.ranks.map((r) => [r.id, r]));
   assert.equal(byId.player.max_homes, 3);
   assert.equal(byId.player.can_back_on_death, false);
   assert.equal(byId.vip.max_homes, 5);
   assert.equal(byId.vip.can_back_on_death, true);
   assert.equal(byId.premium.max_homes, 7);
-  assert.equal(byId.legend.max_homes, 10);
+  assert.equal(byId.legend.max_homes, 16);
+  assert.equal(byId.kronos.max_homes, 50);
+  assert.equal(byId.survival_admin.unlimited_homes, true);
   assert.equal(byId.owner.unlimited_homes, true);
 });
 

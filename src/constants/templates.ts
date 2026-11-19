@@ -1,8 +1,12 @@
 import { PluginTemplate } from '../types';
 import { KRONOS_ESSENTIALS_TEMPLATE } from './kronosEssentialsTemplate';
+import { KRONOS_GUARD_TEMPLATE } from './kronosGuardTemplate';
+import { KRONOS_RANKS_TEMPLATE } from './kronosRanksTemplate';
 import { KRONOS_REGIONS_TEMPLATE } from './kronosRegionsTemplate';
 
 export const STARTER_TEMPLATES: PluginTemplate[] = [
+  KRONOS_RANKS_TEMPLATE,
+  KRONOS_GUARD_TEMPLATE,
   KRONOS_REGIONS_TEMPLATE,
   KRONOS_ESSENTIALS_TEMPLATE,
   {
