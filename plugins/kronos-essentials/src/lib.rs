@@ -1,636 +1,179 @@
-use std::collections::HashMap;
-use std::fs;
-use std::sync::{Mutex, OnceLock};
+pub mod commands;
+pub mod effects;
+pub mod menu;
+pub mod models;
+pub mod storage;
 
 use pumpkin_plugin_api::{
-    Context, Player, Plugin, PluginMetadata, Server,
-    command::{ArgumentType, Command, CommandError, CommandNode, CommandSender, ConsumedArgs, StringType},
-    commands::CommandHandler,
+    events::{
+        BedrockFormResponseEvent, EntityDamageByEntityEvent, EntityDamageEvent, EventHandler,
+        EventPriority, PlayerDeathEvent, PlayerJoinEvent, PlayerLeaveEvent,
+    },
     permission::{Permission, PermissionDefault, PermissionLevel},
     permissions::{FS_READ_DATA, FS_WRITE_DATA},
     register_plugin,
-    text::TextComponent,
-    wit::pumpkin::plugin::{
-        command::Arg,
-        sounds::SoundCategory,
+    wit::pumpkin::plugin::event::{
+        BedrockFormResponseEventData, EntityDamageByEntityEventData, EntityDamageEventData,
+        PlayerDeathEventData, PlayerJoinEventData, PlayerLeaveEventData,
     },
+    Context, Player, Plugin, PluginMetadata, Server,
 };
-use serde::{Deserialize, Serialize};
 
-const PERM_PLAYER: &str = "kronos-essentials:player";
-const PERM_ADMIN: &str = "kronos-essentials:admin";
+use crate::commands::{execute_bedrock_action, PERM_ADMIN, PERM_PLAYER};
+use crate::effects::{capture_player_location, execute_teleport, legacy, play_error_sound};
+use crate::models::{normalize_key, LocationPoint};
+use crate::storage::{
+    init_storage, now_ms, save_current_store, set_death_location, with_state,
+};
 
-fn legacy(s: &str) -> TextComponent {
-    TextComponent::from_legacy_string(s)
-}
+fn apply_combat_tag_to_player(player: &Player) {
+    let p_name = player.get_name();
+    let now = now_ms();
+    let (secs, should_notify) = with_state(|st| st.tag_combat(&p_name, now));
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
-pub struct LocationPoint {
-    pub world: String,
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
-    pub yaw: f32,
-    pub pitch: f32,
-}
-
-#[derive(Default, Serialize, Deserialize)]
-pub struct EssentialsStore {
-    pub homes: HashMap<String, HashMap<String, LocationPoint>>,
-    pub warps: HashMap<String, LocationPoint>,
-    pub spawn: Option<LocationPoint>,
-    pub last_locations: HashMap<String, LocationPoint>,
-}
-
-pub struct EssentialsState {
-    pub data_folder: String,
-    pub store: EssentialsStore,
-    pub prng_seed: u64,
-}
-
-impl EssentialsState {
-    pub fn save(&self) {
-        let path = format!("{}/essentials_store.json", self.data_folder);
-        if let Ok(json) = serde_json::to_string_pretty(&self.store) {
-            let _ = fs::write(&path, json);
-        }
+    let msg = format!("§c⚔ Вы в бою! Телепортация заблокирована на {}с", secs);
+    player.show_actionbar(legacy(&msg));
+    if should_notify {
+        player.send_system_message(legacy(&msg), false);
     }
 }
 
-static STATE: OnceLock<Mutex<EssentialsState>> = OnceLock::new();
-
-fn with_state<R>(f: impl FnOnce(&mut EssentialsState) -> R) -> R {
-    let mutex = STATE.get_or_init(|| {
-        Mutex::new(EssentialsState {
-            data_folder: ".".to_string(),
-            store: EssentialsStore::default(),
-            prng_seed: 0x9e37_79b9_7f4a_7c15,
-        })
-    });
-    let mut guard = mutex.lock().unwrap_or_else(|e| e.into_inner());
-    f(&mut guard)
-}
-
-fn init_state(data_folder: String) {
-    let _ = fs::create_dir_all(&data_folder);
-    let path = format!("{data_folder}/essentials_store.json");
-    let store = match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str::<EssentialsStore>(&raw).unwrap_or_default(),
-        Err(_) => EssentialsStore {
-            homes: HashMap::new(),
-            warps: HashMap::new(),
-            spawn: Some(LocationPoint {
-                world: "minecraft:overworld".to_string(),
-                x: 198.5,
-                y: 65.0,
-                z: 159.5,
-                yaw: 0.0,
-                pitch: 0.0,
-            }),
-            last_locations: HashMap::new(),
-        },
-    };
-
-    let mutex = STATE.get_or_init(|| {
-        Mutex::new(EssentialsState {
-            data_folder: data_folder.clone(),
-            store,
-            prng_seed: 0x9e37_79b9_7f4a_7c15,
-        })
-    });
-    let mut guard = mutex.lock().unwrap_or_else(|e| e.into_inner());
-    guard.data_folder = data_folder;
-}
-
-fn do_teleport(player: &Player, server: &Server, loc: &LocationPoint) -> bool {
-    let world_opt = server.get_world_by_name(&loc.world).or_else(|| {
-        let all = server.get_all_worlds();
-        all.into_iter().next()
-    });
-
-    if let Some(w) = world_opt {
-        player.teleport((loc.x, loc.y, loc.z), Some(loc.yaw), Some(loc.pitch), w);
-        player.play_custom_sound("minecraft:entity.enderman.teleport", SoundCategory::Players, 1.0, 1.0);
-        true
-    } else {
-        false
-    }
+fn find_player_by_entity_id(server: &Server, entity_id: i32) -> Option<Player> {
+    server
+        .get_all_players()
+        .into_iter()
+        .find(|p| p.as_entity().get_id() as i32 == entity_id)
 }
 
 // =============================================================================
-// Commands
+// Event Listeners (Anti-Combat PvP Timer, Death /back, Join Spawn, Bedrock Forms)
 // =============================================================================
 
-struct SetHomeCmd;
-impl CommandHandler for SetHomeCmd {
-    fn handle(&self, sender: CommandSender, _server: Server, args: ConsumedArgs) -> Result<i32, CommandError> {
-        let player = match sender.as_player() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cКоманда доступна только игрокам!"));
-                return Ok(0);
+struct PvPCombatHandler;
+impl EventHandler<EntityDamageByEntityEvent> for PvPCombatHandler {
+    fn handle(
+        &self,
+        server: Server,
+        event: EntityDamageByEntityEventData,
+    ) -> EntityDamageByEntityEventData {
+        if !event.cancelled && event.damage > 0.0 {
+            if let Some(victim) = find_player_by_entity_id(&server, event.entity_id) {
+                apply_combat_tag_to_player(&victim);
             }
-        };
-
-        let pos = match sender.position() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cНе удалось определить вашу позицию!"));
-                return Ok(0);
-            }
-        };
-
-        let raw = match args.get_value("args") {
-            Arg::Simple(s) | Arg::Msg(s) => s,
-            _ => String::new(),
-        };
-        let home_name = raw.trim().split_whitespace().next().unwrap_or("default");
-
-        let p_name = player.get_name();
-        let loc = LocationPoint {
-            world: "minecraft:overworld".to_string(),
-            x: (pos.0 * 10.0).round() / 10.0,
-            y: (pos.1 * 10.0).round() / 10.0,
-            z: (pos.2 * 10.0).round() / 10.0,
-            yaw: 0.0,
-            pitch: 0.0,
-        };
-
-        with_state(|st| {
-            let player_homes = st.store.homes.entry(p_name.clone()).or_default();
-            player_homes.insert(home_name.to_string(), loc.clone());
-            st.save();
-        });
-
-        player.play_custom_sound("minecraft:block.note_block.pling", SoundCategory::Players, 1.0, 1.5);
-        sender.send_system_message(legacy(&format!(
-            "§6§l✦ KRONOS §8» §aТочка дома §e{} §aуспешно установлена! §7({:.1}, {:.1}, {:.1})",
-            home_name, loc.x, loc.y, loc.z
-        )));
-        Ok(0)
-    }
-}
-
-struct HomeCmd;
-impl CommandHandler for HomeCmd {
-    fn handle(&self, sender: CommandSender, server: Server, args: ConsumedArgs) -> Result<i32, CommandError> {
-        let player = match sender.as_player() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cКоманда доступна только игрокам!"));
-                return Ok(0);
-            }
-        };
-
-        let raw = match args.get_value("args") {
-            Arg::Simple(s) | Arg::Msg(s) => s,
-            _ => String::new(),
-        };
-        let home_name = raw.trim().split_whitespace().next().unwrap_or("default");
-        let p_name = player.get_name();
-
-        let target_loc = with_state(|st| {
-            st.store.homes.get(&p_name).and_then(|h| h.get(home_name).cloned())
-        });
-
-        if let Some(loc) = target_loc {
-            if let Some(pos) = sender.position() {
-                with_state(|st| {
-                    st.store.last_locations.insert(p_name.clone(), LocationPoint {
-                        world: "minecraft:overworld".to_string(),
-                        x: pos.0,
-                        y: pos.1,
-                        z: pos.2,
-                        yaw: 0.0,
-                        pitch: 0.0,
-                    });
-                });
-            }
-
-            if do_teleport(&player, &server, &loc) {
-                sender.send_system_message(legacy(&format!(
-                    "§6§l✦ KRONOS §8» §aТелепортация на точку дома §e{}§a!",
-                    home_name
-                )));
-            } else {
-                sender.send_error(legacy("§cОшибка: мир дома недоступен!"));
-            }
-        } else {
-            sender.send_error(legacy(&format!(
-                "§cУ вас нет точки дома с именем '§e{}§c'. Установите её: §e/sethome {}",
-                home_name, home_name
-            )));
-        }
-
-        Ok(0)
-    }
-}
-
-struct HomesListCmd;
-impl CommandHandler for HomesListCmd {
-    fn handle(&self, sender: CommandSender, _server: Server, _args: ConsumedArgs) -> Result<i32, CommandError> {
-        let player = match sender.as_player() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cКоманда доступна только игрокам!"));
-                return Ok(0);
-            }
-        };
-
-        let p_name = player.get_name();
-        let homes = with_state(|st| {
-            st.store.homes.get(&p_name).cloned().unwrap_or_default()
-        });
-
-        if homes.is_empty() {
-            sender.send_system_message(legacy(
-                "§6§l✦ KRONOS §8» §7У вас пока нет сохранённых домов. Создайте: §e/sethome",
-            ));
-        } else {
-            sender.send_system_message(legacy("§8§m────────────────────────────────────────"));
-            sender.send_system_message(legacy("§6§l✦ ВАШИ ТОЧКИ ДОМА:"));
-            for (name, loc) in homes {
-                sender.send_system_message(legacy(&format!(
-                    "  §e• §f{} §8— §7X: §a{:.1} §7Y: §a{:.1} §7Z: §a{:.1}",
-                    name, loc.x, loc.y, loc.z
-                )));
-            }
-            sender.send_system_message(legacy("§8§m────────────────────────────────────────"));
-        }
-
-        Ok(0)
-    }
-}
-
-struct DelHomeCmd;
-impl CommandHandler for DelHomeCmd {
-    fn handle(&self, sender: CommandSender, _server: Server, args: ConsumedArgs) -> Result<i32, CommandError> {
-        let player = match sender.as_player() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cКоманда доступна только игрокам!"));
-                return Ok(0);
-            }
-        };
-
-        let raw = match args.get_value("args") {
-            Arg::Simple(s) | Arg::Msg(s) => s,
-            _ => String::new(),
-        };
-        let home_name = raw.trim().split_whitespace().next().unwrap_or("");
-        if home_name.is_empty() {
-            sender.send_error(legacy("§eИспользование: §b/delhome <название>"));
-            return Ok(0);
-        }
-
-        let p_name = player.get_name();
-        let removed = with_state(|st| {
-            if let Some(player_homes) = st.store.homes.get_mut(&p_name) {
-                let r = player_homes.remove(home_name).is_some();
-                if r {
-                    st.save();
+            if event.damager_id != event.entity_id {
+                if let Some(attacker) = find_player_by_entity_id(&server, event.damager_id) {
+                    apply_combat_tag_to_player(&attacker);
                 }
-                r
-            } else {
-                false
             }
-        });
-
-        if removed {
-            sender.send_system_message(legacy(&format!(
-                "§6§l✦ KRONOS §8» §cТочка дома '§e{}§c' успешно удалена.",
-                home_name
-            )));
-        } else {
-            sender.send_error(legacy(&format!("§cТочка дома '§e{}§c' не найдена!", home_name)));
         }
-
-        Ok(0)
+        event
     }
 }
 
-struct SpawnCmd;
-impl CommandHandler for SpawnCmd {
-    fn handle(&self, sender: CommandSender, server: Server, _args: ConsumedArgs) -> Result<i32, CommandError> {
-        let player = match sender.as_player() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cКоманда доступна только игрокам!"));
-                return Ok(0);
+struct DamageCombatHandler;
+impl EventHandler<EntityDamageEvent> for DamageCombatHandler {
+    fn handle(&self, server: Server, event: EntityDamageEventData) -> EntityDamageEventData {
+        if !event.cancelled && event.damage > 0.0 {
+            if let Some(victim) = find_player_by_entity_id(&server, event.entity_id) {
+                apply_combat_tag_to_player(&victim);
             }
-        };
+        }
+        event
+    }
+}
 
-        let p_name = player.get_name();
-        if let Some(pos) = sender.position() {
+struct DeathHandler;
+impl EventHandler<PlayerDeathEvent> for DeathHandler {
+    fn handle(&self, _server: Server, event: PlayerDeathEventData) -> PlayerDeathEventData {
+        if !event.cancelled {
+            let p_name = event.player.get_name();
+            let death_loc = capture_player_location(&event.player);
             with_state(|st| {
-                st.store.last_locations.insert(p_name, LocationPoint {
-                    world: "minecraft:overworld".to_string(),
-                    x: pos.0,
-                    y: pos.1,
-                    z: pos.2,
-                    yaw: 0.0,
-                    pitch: 0.0,
-                });
+                st.clear_combat(&p_name);
+                set_death_location(&mut st.store, &p_name, death_loc);
             });
+            save_current_store();
+            event.player.send_system_message(
+                legacy("§6§l✦ KRONOS §8» §7Точка смерти сохранена. Используйте §e/back §7для возврата."),
+                false,
+            );
         }
-
-        let spawn_loc = with_state(|st| {
-            st.store.spawn.clone().unwrap_or(LocationPoint {
-                world: "minecraft:overworld".to_string(),
-                x: 198.5,
-                y: 65.0,
-                z: 159.5,
-                yaw: 0.0,
-                pitch: 0.0,
-            })
-        });
-
-        if do_teleport(&player, &server, &spawn_loc) {
-            sender.send_system_message(legacy("§6§l✦ KRONOS §8» §aДобро пожаловать на спавн сервера!"));
-        } else {
-            sender.send_error(legacy("§cОшибка: мир спавна недоступен!"));
-        }
-
-        Ok(0)
+        event
     }
 }
 
-struct SetSpawnCmd;
-impl CommandHandler for SetSpawnCmd {
-    fn handle(&self, sender: CommandSender, _server: Server, _args: ConsumedArgs) -> Result<i32, CommandError> {
-        let pos = match sender.position() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cНе удалось определить позицию!"));
-                return Ok(0);
-            }
-        };
+struct JoinHandler;
+impl EventHandler<PlayerJoinEvent> for JoinHandler {
+    fn handle(&self, server: Server, event: PlayerJoinEventData) -> PlayerJoinEventData {
+        let p_name = event.player.get_name();
+        let (should_tp_spawn, spawn_loc, cfg) = with_state(|st| {
+            let entry = st.store.players.entry(normalize_key(&p_name)).or_default();
+            let first_join = !entry.visited_before;
+            entry.visited_before = true;
+            let tp_spawn = first_join && st.config.teleport_new_players_to_spawn;
+            let spawn = st
+                .store
+                .spawn
+                .clone()
+                .unwrap_or_else(LocationPoint::default_spawn);
+            (tp_spawn, spawn, st.config.clone())
+        });
 
-        let loc = LocationPoint {
-            world: "minecraft:overworld".to_string(),
-            x: (pos.0 * 10.0).round() / 10.0,
-            y: (pos.1 * 10.0).round() / 10.0,
-            z: (pos.2 * 10.0).round() / 10.0,
-            yaw: 0.0,
-            pitch: 0.0,
-        };
+        if should_tp_spawn {
+            save_current_store();
+            let _ = execute_teleport(
+                &event.player,
+                &server,
+                &spawn_loc,
+                "§6§l✦ KRONOS",
+                "§aДобро пожаловать!",
+                &cfg,
+                false,
+                false,
+            );
+        }
+        event
+    }
+}
 
+struct LeaveHandler;
+impl EventHandler<PlayerLeaveEvent> for LeaveHandler {
+    fn handle(&self, _server: Server, event: PlayerLeaveEventData) -> PlayerLeaveEventData {
+        let p_key = normalize_key(&event.player.get_name());
         with_state(|st| {
-            st.store.spawn = Some(loc.clone());
-            st.save();
+            st.tpa_requests.remove(&p_key);
+            st.pending_forms.retain(|_, f| f.player_key != p_key);
         });
-
-        sender.send_system_message(legacy(&format!(
-            "§6§l✦ KRONOS §8» §aТочка спавна сервера обновлена: §e{:.1}, {:.1}, {:.1}",
-            loc.x, loc.y, loc.z
-        )));
-        Ok(0)
+        event
     }
 }
 
-struct BackCmd;
-impl CommandHandler for BackCmd {
-    fn handle(&self, sender: CommandSender, server: Server, _args: ConsumedArgs) -> Result<i32, CommandError> {
-        let player = match sender.as_player() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cКоманда доступна только игрокам!"));
-                return Ok(0);
+struct BedrockFormHandler;
+impl EventHandler<BedrockFormResponseEvent> for BedrockFormHandler {
+    fn handle(
+        &self,
+        server: Server,
+        event: BedrockFormResponseEventData,
+    ) -> BedrockFormResponseEventData {
+        let pending_opt = with_state(|st| st.pending_forms.remove(&event.form_id));
+        if let (Some(pending), Some(raw_response)) = (pending_opt, event.response_data.as_deref()) {
+            let p_key = normalize_key(&event.player.get_name());
+            if pending.player_key == p_key {
+                if let Ok(button_idx) = raw_response.trim().parse::<usize>() {
+                    if let Some(action) = pending.actions.into_iter().nth(button_idx) {
+                        execute_bedrock_action(&event.player, &server, action);
+                    } else {
+                        play_error_sound(&event.player);
+                    }
+                }
             }
-        };
-
-        let p_name = player.get_name();
-        let last_loc = with_state(|st| st.store.last_locations.get(&p_name).cloned());
-
-        if let Some(loc) = last_loc {
-            if do_teleport(&player, &server, &loc) {
-                sender.send_system_message(legacy("§6§l✦ KRONOS §8» §aВозврат на предыдущую локацию!"));
-            } else {
-                sender.send_error(legacy("§cНе удалось телепортироваться на прошлую точку!"));
-            }
-        } else {
-            sender.send_error(legacy("§cУ вас нет предыдущей сохранённой локации!"));
         }
-
-        Ok(0)
-    }
-}
-
-struct RtpCmd;
-impl CommandHandler for RtpCmd {
-    fn handle(&self, sender: CommandSender, server: Server, _args: ConsumedArgs) -> Result<i32, CommandError> {
-        let player = match sender.as_player() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cКоманда доступна только игрокам!"));
-                return Ok(0);
-            }
-        };
-
-        let p_name = player.get_name();
-        if let Some(pos) = sender.position() {
-            with_state(|st| {
-                st.store.last_locations.insert(p_name, LocationPoint {
-                    world: "minecraft:overworld".to_string(),
-                    x: pos.0,
-                    y: pos.1,
-                    z: pos.2,
-                    yaw: 0.0,
-                    pitch: 0.0,
-                });
-            });
-        }
-
-        let (rx, rz) = with_state(|st| {
-            let mut s = st.prng_seed;
-            s ^= s << 13;
-            s ^= s >> 7;
-            s ^= s << 17;
-            st.prng_seed = s;
-
-            let dist = 300.0 + (s % 1200) as f64;
-            let angle = ((s % 360) as f64).to_radians();
-            (198.0 + dist * angle.cos(), 159.0 + dist * angle.sin())
-        });
-
-        let rtp_loc = LocationPoint {
-            world: "minecraft:overworld".to_string(),
-            x: rx.round(),
-            y: 90.0,
-            z: rz.round(),
-            yaw: 0.0,
-            pitch: 0.0,
-        };
-
-        if do_teleport(&player, &server, &rtp_loc) {
-            sender.send_system_message(legacy(&format!(
-                "§6§l✦ KRONOS §8» §aСлучайная телепортация §eRTP §aна §7({:.0}, {:.0})!",
-                rtp_loc.x, rtp_loc.z
-            )));
-        } else {
-            sender.send_error(legacy("§cОшибка телепортации RTP!"));
-        }
-
-        Ok(0)
-    }
-}
-
-struct WarpCmd;
-impl CommandHandler for WarpCmd {
-    fn handle(&self, sender: CommandSender, server: Server, args: ConsumedArgs) -> Result<i32, CommandError> {
-        let player = match sender.as_player() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cКоманда доступна только игрокам!"));
-                return Ok(0);
-            }
-        };
-
-        let raw = match args.get_value("args") {
-            Arg::Simple(s) | Arg::Msg(s) => s,
-            _ => String::new(),
-        };
-        let warp_name = raw.trim().split_whitespace().next().unwrap_or("");
-        if warp_name.is_empty() {
-            sender.send_error(legacy("§eИспользование: §b/warp <название> §7(список: /warps)"));
-            return Ok(0);
-        }
-
-        let target_warp = with_state(|st| st.store.warps.get(warp_name).cloned());
-
-        if let Some(loc) = target_warp {
-            let p_name = player.get_name();
-            if let Some(pos) = sender.position() {
-                with_state(|st| {
-                    st.store.last_locations.insert(p_name, LocationPoint {
-                        world: "minecraft:overworld".to_string(),
-                        x: pos.0,
-                        y: pos.1,
-                        z: pos.2,
-                        yaw: 0.0,
-                        pitch: 0.0,
-                    });
-                });
-            }
-
-            if do_teleport(&player, &server, &loc) {
-                sender.send_system_message(legacy(&format!(
-                    "§6§l✦ KRONOS §8» §aВы успешно телепортированы на варп §e{}§a!",
-                    warp_name
-                )));
-            } else {
-                sender.send_error(legacy("§cМир варпа недоступен!"));
-            }
-        } else {
-            sender.send_error(legacy(&format!("§cВарп '§e{}§c' не существует! Список: §e/warps", warp_name)));
-        }
-
-        Ok(0)
-    }
-}
-
-struct SetWarpCmd;
-impl CommandHandler for SetWarpCmd {
-    fn handle(&self, sender: CommandSender, _server: Server, args: ConsumedArgs) -> Result<i32, CommandError> {
-        let pos = match sender.position() {
-            Some(p) => p,
-            None => {
-                sender.send_error(legacy("§cНе удалось определить позицию!"));
-                return Ok(0);
-            }
-        };
-
-        let raw = match args.get_value("args") {
-            Arg::Simple(s) | Arg::Msg(s) => s,
-            _ => String::new(),
-        };
-        let warp_name = raw.trim().split_whitespace().next().unwrap_or("");
-        if warp_name.is_empty() {
-            sender.send_error(legacy("§eИспользование: §b/setwarp <название>"));
-            return Ok(0);
-        }
-
-        let loc = LocationPoint {
-            world: "minecraft:overworld".to_string(),
-            x: (pos.0 * 10.0).round() / 10.0,
-            y: (pos.1 * 10.0).round() / 10.0,
-            z: (pos.2 * 10.0).round() / 10.0,
-            yaw: 0.0,
-            pitch: 0.0,
-        };
-
-        with_state(|st| {
-            st.store.warps.insert(warp_name.to_string(), loc.clone());
-            st.save();
-        });
-
-        sender.send_system_message(legacy(&format!(
-            "§6§l✦ KRONOS §8» §aВарп §e{} §aуспешно создан! §7({:.1}, {:.1}, {:.1})",
-            warp_name, loc.x, loc.y, loc.z
-        )));
-        Ok(0)
-    }
-}
-
-struct WarpsListCmd;
-impl CommandHandler for WarpsListCmd {
-    fn handle(&self, sender: CommandSender, _server: Server, _args: ConsumedArgs) -> Result<i32, CommandError> {
-        let warps = with_state(|st| st.store.warps.clone());
-
-        if warps.is_empty() {
-            sender.send_system_message(legacy("§6§l✦ KRONOS §8» §7На сервере пока нет созданных варпов."));
-        } else {
-            sender.send_system_message(legacy("§8§m────────────────────────────────────────"));
-            sender.send_system_message(legacy("§6§l✦ ДОСТУПНЫЕ ВАРПЫ СЕРВЕРА:"));
-            for (name, loc) in warps {
-                sender.send_system_message(legacy(&format!(
-                    "  §e• §b{} §8— §7X: §a{:.1} §7Y: §a{:.1} §7Z: §a{:.1}",
-                    name, loc.x, loc.y, loc.z
-                )));
-            }
-            sender.send_system_message(legacy("§8§m────────────────────────────────────────"));
-        }
-
-        Ok(0)
-    }
-}
-
-struct DelWarpCmd;
-impl CommandHandler for DelWarpCmd {
-    fn handle(&self, sender: CommandSender, _server: Server, args: ConsumedArgs) -> Result<i32, CommandError> {
-        let raw = match args.get_value("args") {
-            Arg::Simple(s) | Arg::Msg(s) => s,
-            _ => String::new(),
-        };
-        let warp_name = raw.trim().split_whitespace().next().unwrap_or("");
-        if warp_name.is_empty() {
-            sender.send_error(legacy("§eИспользование: §b/delwarp <название>"));
-            return Ok(0);
-        }
-
-        let removed = with_state(|st| {
-            let r = st.store.warps.remove(warp_name).is_some();
-            if r {
-                st.save();
-            }
-            r
-        });
-
-        if removed {
-            sender.send_system_message(legacy(&format!(
-                "§6§l✦ KRONOS §8» §cВарп '§e{}§c' успешно удалён.",
-                warp_name
-            )));
-        } else {
-            sender.send_error(legacy(&format!("§cВарп '§e{}§c' не найден!", warp_name)));
-        }
-
-        Ok(0)
+        event
     }
 }
 
 // =============================================================================
-// Plugin Lifecycle
+// Plugin Entrypoint
 // =============================================================================
 
 pub struct KronosEssentialsPlugin;
@@ -645,100 +188,208 @@ impl Plugin for KronosEssentialsPlugin {
             name: "kronos-essentials".into(),
             version: "2.0.0".into(),
             authors: vec!["UncleBug".into()],
-            description: "Homes, Warps, Spawn, Back, and RTP for KRONOS 26.3".into(),
+            description: "Homes, Shared Homes, Spawn, Warps, Safe RTP, TPA, Anti-Combat PvP Timer, and Interactive Menus for Pumpkin 26.3".into(),
             dependencies: vec![],
             permissions: vec![FS_READ_DATA.into(), FS_WRITE_DATA.into()],
         }
     }
 
     fn on_load(&self, context: Context) -> Result<(), String> {
-        init_state(context.get_data_folder());
+        init_storage(context.get_data_folder());
 
         context.register_permission(&Permission {
             node: PERM_PLAYER.to_string(),
-            description: "Access to player teleport commands".to_string(),
+            description: "Access to KRONOS Essentials player teleport and home commands".to_string(),
             default: PermissionDefault::Allow,
             children: vec![],
         })?;
 
         context.register_permission(&Permission {
             node: PERM_ADMIN.to_string(),
-            description: "Access to admin warp and spawn management".to_string(),
+            description: "Access to KRONOS Essentials admin spawn and warp management".to_string(),
             default: PermissionDefault::Op(PermissionLevel::Three),
             children: vec![],
         })?;
 
-        // /sethome
-        let sethome_cmd = Command::new(&["sethome".into()], "Установить точку дома (/sethome [имя])")
-            .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(SetHomeCmd))
-            .execute(SetHomeCmd);
-        context.register_command(sethome_cmd, PERM_PLAYER);
+        commands::register_all(&context);
 
-        // /home
-        let home_cmd = Command::new(&["home".into(), "h".into()], "Телепортироваться домой (/home [имя])")
-            .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(HomeCmd))
-            .execute(HomeCmd);
-        context.register_command(home_cmd, PERM_PLAYER);
+        context.register_event_handler::<EntityDamageByEntityEvent, _>(
+            PvPCombatHandler,
+            EventPriority::Normal,
+            false,
+        )?;
+        context.register_event_handler::<EntityDamageEvent, _>(
+            DamageCombatHandler,
+            EventPriority::Normal,
+            false,
+        )?;
+        context.register_event_handler::<PlayerDeathEvent, _>(
+            DeathHandler,
+            EventPriority::Normal,
+            false,
+        )?;
+        context.register_event_handler::<PlayerJoinEvent, _>(
+            JoinHandler,
+            EventPriority::Normal,
+            false,
+        )?;
+        context.register_event_handler::<PlayerLeaveEvent, _>(
+            LeaveHandler,
+            EventPriority::Normal,
+            false,
+        )?;
+        context.register_event_handler::<BedrockFormResponseEvent, _>(
+            BedrockFormHandler,
+            EventPriority::Normal,
+            false,
+        )?;
 
-        // /homes
-        let homes_cmd = Command::new(&["homes".into()], "Список всех точек дома (/homes)")
-            .execute(HomesListCmd);
-        context.register_command(homes_cmd, PERM_PLAYER);
-
-        // /delhome
-        let delhome_cmd = Command::new(&["delhome".into()], "Удалить точку дома (/delhome <имя>)")
-            .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(DelHomeCmd));
-        context.register_command(delhome_cmd, PERM_PLAYER);
-
-        // /spawn
-        let spawn_cmd = Command::new(&["spawn".into()], "Телепортироваться на спавн сервера")
-            .execute(SpawnCmd);
-        context.register_command(spawn_cmd, PERM_PLAYER);
-
-        // /setspawn
-        let setspawn_cmd = Command::new(&["setspawn".into()], "Установить точку спавна сервера")
-            .execute(SetSpawnCmd);
-        context.register_command(setspawn_cmd, PERM_ADMIN);
-
-        // /back
-        let back_cmd = Command::new(&["back".into()], "Вернуться на предыдущую локацию")
-            .execute(BackCmd);
-        context.register_command(back_cmd, PERM_PLAYER);
-
-        // /rtp
-        let rtp_cmd = Command::new(&["rtp".into()], "Случайная телепортация в дикую местность")
-            .execute(RtpCmd);
-        context.register_command(rtp_cmd, PERM_PLAYER);
-
-        // /warp
-        let warp_cmd = Command::new(&["warp".into(), "w".into()], "Телепортироваться на варп (/warp <название>)")
-            .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(WarpCmd));
-        context.register_command(warp_cmd, PERM_PLAYER);
-
-        // /warps
-        let warps_cmd = Command::new(&["warps".into()], "Список всех варпов сервера")
-            .execute(WarpsListCmd);
-        context.register_command(warps_cmd, PERM_PLAYER);
-
-        // /setwarp
-        let setwarp_cmd = Command::new(&["setwarp".into()], "Установить точку варпа (/setwarp <название>)")
-            .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(SetWarpCmd));
-        context.register_command(setwarp_cmd, PERM_ADMIN);
-
-        // /delwarp
-        let delwarp_cmd = Command::new(&["delwarp".into()], "Удалить варп (/delwarp <название>)")
-            .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(DelWarpCmd));
-        context.register_command(delwarp_cmd, PERM_ADMIN);
-
-        tracing::info!("KRONOS Essentials v2.0.0 initialized successfully!");
+        tracing::info!(
+            "KRONOS Essentials v2.0.0 loaded (pumpkin_plugin_api, Anti-Combat 15s, Safe RTP, Shared Homes)."
+        );
         Ok(())
     }
 
     fn on_unload(&self, _context: Context) -> Result<(), String> {
-        with_state(|st| st.save());
-        tracing::info!("KRONOS Essentials unloaded.");
+        save_current_store();
+        tracing::info!("KRONOS Essentials unloaded and essentials_store.json saved.");
         Ok(())
     }
 }
 
 register_plugin!(KronosEssentialsPlugin);
+
+// =============================================================================
+// Unit Tests (Pure Domain Logic)
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use crate::effects::{
+        is_block_hazardous, is_passable_space_props, is_standable_ground_props, sample_ring_coords,
+    };
+    use crate::models::{
+        EssentialsConfig, EssentialsState, EssentialsStore, LocationPoint,
+    };
+    use crate::storage::{
+        list_shared_homes_for, parse_store_json, resolve_shared_home, share_home, unshare_home,
+        upsert_home, SetHomeOutcome, ShareOutcome, UnshareOutcome,
+    };
+
+    #[test]
+    fn rtp_rejects_lava_water_leaves_and_accepts_grass_block() {
+        assert!(is_block_hazardous("minecraft:lava"));
+        assert!(is_block_hazardous("minecraft:water"));
+        assert!(is_block_hazardous("minecraft:cactus"));
+        assert!(!is_block_hazardous("minecraft:grass_block"));
+
+        assert!(is_standable_ground_props(
+            true,
+            false,
+            false,
+            true,
+            "minecraft:grass_block",
+            true
+        ));
+        assert!(!is_standable_ground_props(
+            true,
+            false,
+            false,
+            true,
+            "minecraft:oak_leaves",
+            true
+        ));
+        assert!(!is_standable_ground_props(
+            false,
+            true,
+            false,
+            false,
+            "minecraft:lava",
+            true
+        ));
+        assert!(is_passable_space_props(
+            true,
+            false,
+            false,
+            true,
+            "minecraft:air"
+        ));
+        assert!(!is_passable_space_props(
+            false,
+            true,
+            false,
+            true,
+            "minecraft:lava"
+        ));
+    }
+
+    #[test]
+    fn rtp_ring_coords_stay_within_configured_bounds() {
+        let (x, z) = sample_ring_coords(100.0, -50.0, 250, 1500, 4242, 18000);
+        let dist = (((x as f64 - 100.0).powi(2)) + ((z as f64 + 50.0).powi(2))).sqrt();
+        assert!(dist >= 249.0 && dist <= 1501.0);
+    }
+
+    #[test]
+    fn anti_combat_timer_blocks_for_15_seconds_then_expires() {
+        let mut state = EssentialsState::new(
+            ".".to_string(),
+            EssentialsConfig::default(),
+            EssentialsStore::default(),
+        );
+        let (secs, notified) = state.tag_combat("Steve", 10_000);
+        assert_eq!(secs, 15);
+        assert!(notified);
+        assert_eq!(state.combat_remaining_secs("steve", 10_500), Some(15));
+        assert_eq!(state.combat_remaining_secs("Steve", 20_000), Some(5));
+        assert_eq!(state.combat_remaining_secs("Steve", 25_001), None);
+    }
+
+    #[test]
+    fn shared_homes_grant_list_resolve_and_revoke_access() {
+        let mut store = EssentialsStore::default();
+        let loc = LocationPoint::rounded("minecraft:overworld".into(), 12.0, 64.0, -34.0, 0.0, 0.0);
+        assert!(matches!(
+            upsert_home(&mut store, "Alice", "base", loc, 3, false, 1000),
+            SetHomeOutcome::Created { .. }
+        ));
+
+        assert_eq!(
+            share_home(&mut store, "Alice", "base", "Bob", 5),
+            ShareOutcome::Shared {
+                home: "base".into(),
+                friend: "Bob".into()
+            }
+        );
+
+        let shared_for_bob = list_shared_homes_for(&store, "bob");
+        assert_eq!(shared_for_bob.len(), 1);
+        assert_eq!(shared_for_bob[0].home.name, "base");
+
+        assert!(resolve_shared_home(&mut store, "Bob", "Alice", "base").is_some());
+        assert!(resolve_shared_home(&mut store, "Charlie", "Alice", "base").is_none());
+
+        assert_eq!(
+            unshare_home(&mut store, "Alice", "base", "Bob"),
+            UnshareOutcome::Unshared {
+                home: "base".into(),
+                friend: "Bob".into()
+            }
+        );
+        assert!(resolve_shared_home(&mut store, "Bob", "Alice", "base").is_none());
+    }
+
+    #[test]
+    fn legacy_essentials_store_migrates_cleanly() {
+        let raw = r#"{
+            "homes": { "UncleBug": { "base": { "world": "minecraft:overworld", "x": 10.0, "y": 70.0, "z": -20.0, "yaw": 0.0, "pitch": 0.0 } } },
+            "warps": {},
+            "spawn": { "world": "minecraft:overworld", "x": 0.5, "y": 65.0, "z": 0.5, "yaw": 0.0, "pitch": 0.0 },
+            "last_locations": {}
+        }"#;
+        let parsed = parse_store_json(raw).expect("legacy store must parse");
+        let homes = crate::storage::list_player_homes(&parsed, "UncleBug");
+        assert_eq!(homes.len(), 1);
+        assert_eq!(homes[0].name, "base");
+    }
+}

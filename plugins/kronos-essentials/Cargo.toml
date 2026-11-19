@@ -2,15 +2,16 @@
 name = "kronos-essentials"
 version = "2.0.0"
 edition = "2021"
-description = "KRONOS Essentials v2: Homes, Shared Homes, Spawn, Warps, RTP Meteor Drop, TPA, Anti-Combat, Safe Teleport, 5 Chest GUIs, and Cinematic FX for Pumpkin 26.3"
+description = "KRONOS Essentials v2: Homes, Shared Homes, Spawn, Warps, Safe RTP, TPA, Anti-Combat PvP Timer, Interactive Chat/Bedrock Menus, and Multi-Version FX for Pumpkin 26.3"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
+pumpkin-plugin-api = "0.1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-log = "0.4"
+tracing = "0.1"
 
 [profile.release]
 opt-level = "z"

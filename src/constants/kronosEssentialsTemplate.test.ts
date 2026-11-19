@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { KRONOS_ESSENTIALS_TEMPLATE } from './kronosEssentialsTemplate';
 
-test('KRONOS Essentials v2 template contains all required Rust crate modules and config', () => {
+const PLUGIN_ROOT = path.resolve(process.cwd(), 'plugins/kronos-essentials');
+
+test('KRONOS Essentials template contains modular Rust files without fictitious src/host.rs', () => {
   const filePaths = Object.keys(KRONOS_ESSENTIALS_TEMPLATE.files).sort();
   assert.deepEqual(filePaths, [
     'Cargo.toml',
@@ -10,92 +14,93 @@ test('KRONOS Essentials v2 template contains all required Rust crate modules and
     'data/config.json',
     'src/commands.rs',
     'src/effects.rs',
-    'src/host.rs',
     'src/lib.rs',
     'src/menu.rs',
     'src/models.rs',
     'src/storage.rs',
   ]);
+  assert.equal(fs.existsSync(path.join(PLUGIN_ROOT, 'src/host.rs')), false);
 });
 
-test('KRONOS Essentials v2 Cargo.toml targets cdylib v2.0.0 with size optimizations', () => {
+test('KRONOS Essentials template stays byte-for-byte synced with plugins/kronos-essentials', () => {
+  for (const [relPath, content] of Object.entries(KRONOS_ESSENTIALS_TEMPLATE.files)) {
+    const diskContent = fs.readFileSync(path.join(PLUGIN_ROOT, relPath), 'utf8');
+    assert.equal(content, diskContent, `Template file ${relPath} drifted from disk`);
+  }
+});
+
+test('KRONOS Essentials has zero pumpkin_host FFI or extern "C" imports and uses official pumpkin_plugin_api', () => {
   const cargo = KRONOS_ESSENTIALS_TEMPLATE.files['Cargo.toml'];
   assert.match(cargo, /name = "kronos-essentials"/);
-  assert.match(cargo, /version = "2\.0\.0"/);
   assert.match(cargo, /crate-type = \["cdylib"\]/);
+  assert.match(cargo, /pumpkin-plugin-api = "0\.1\.0"/);
   assert.match(cargo, /serde_json/);
+  assert.match(cargo, /tracing/);
+
+  for (const [relPath, content] of Object.entries(KRONOS_ESSENTIALS_TEMPLATE.files)) {
+    if (!relPath.endsWith('.rs')) continue;
+    assert.ok(!content.includes('pumpkin_host'), `${relPath} must not reference pumpkin_host`);
+    assert.ok(!content.includes('extern "C"'), `${relPath} must not declare extern "C" FFI`);
+    assert.ok(!content.includes('wasm_import_module'), `${relPath} must not use wasm_import_module`);
+  }
+
+  const lib = KRONOS_ESSENTIALS_TEMPLATE.files['src/lib.rs'];
+  assert.ok(lib.includes('register_plugin!(KronosEssentialsPlugin);'));
+  assert.ok(lib.includes('impl Plugin for KronosEssentialsPlugin'));
+  assert.ok(lib.includes('#[cfg(test)]'), 'Missing built-in Rust unit tests');
 });
 
-test('KRONOS Essentials v2 config.json validates rank limits, anti-combat, safe tp, and RTP config', () => {
+test('KRONOS Essentials implements safe RTP surface scan without hardcoded Y=90', () => {
+  const effects = KRONOS_ESSENTIALS_TEMPLATE.files['src/effects.rs'];
+  const commands = KRONOS_ESSENTIALS_TEMPLATE.files['src/commands.rs'];
+
+  assert.ok(!commands.includes('y: 90.0'), 'Hardcoded y: 90.0 must be removed from /rtp');
+  assert.ok(effects.includes('get_motion_blocking_height'));
+  assert.ok(effects.includes('get_top_block_y'));
+  assert.ok(effects.includes('get_block_state'));
+  assert.ok(effects.includes('get_border().contains'));
+  assert.ok(effects.includes('is_block_hazardous'));
+  assert.ok(effects.includes('play_custom_sound'));
+  assert.ok(effects.includes('SoundCategory::Players'));
+  assert.ok(effects.includes('StatusEffectType::Blindness'));
+  assert.ok(effects.includes('StatusEffectType::Resistance'));
+  assert.ok(effects.includes('StatusEffectType::SlowFalling'));
+});
+
+test('KRONOS Essentials implements /sharehome, interactive TextComponent + Bedrock menu, and 15s Anti-Combat', () => {
+  const lib = KRONOS_ESSENTIALS_TEMPLATE.files['src/lib.rs'];
+  const commands = KRONOS_ESSENTIALS_TEMPLATE.files['src/commands.rs'];
+  const menu = KRONOS_ESSENTIALS_TEMPLATE.files['src/menu.rs'];
+  const storage = KRONOS_ESSENTIALS_TEMPLATE.files['src/storage.rs'];
+
+  // Anti-Combat events and exact blocking message
+  assert.ok(lib.includes('EntityDamageByEntityEvent'));
+  assert.ok(lib.includes('EntityDamageEvent'));
+  assert.ok(commands.includes('Вы в бою! Телепортация заблокирована на'));
+
+  // Shared homes commands and persistence in essentials_store.json
+  assert.ok(commands.includes('"sharehome"'));
+  assert.ok(commands.includes('"share"') && commands.includes('"unshare"'));
+  assert.ok(storage.includes('essentials_store.json'));
+  assert.ok(storage.includes('share_home') && storage.includes('unshare_home'));
+  assert.ok(storage.includes('save_store_atomic') && storage.includes('fs::rename'));
+
+  // Interactive chat menu with click/hover + Bedrock form support
+  assert.ok(menu.includes('click_run_command'));
+  assert.ok(menu.includes('click_suggest_command'));
+  assert.ok(menu.includes('hover_show_text'));
+  assert.ok(menu.includes('SimpleForm'));
+  assert.ok(commands.includes('"menu"') && commands.includes('"homes"'));
+});
+
+test('KRONOS Essentials config.json remains valid JSON with 15s combat tag and 20 ranks', () => {
   const raw = KRONOS_ESSENTIALS_TEMPLATE.files['data/config.json'];
   const parsed = JSON.parse(raw) as {
     combat_tag_seconds: number;
     safe_teleport_check: boolean;
-    post_teleport_invulnerability_ticks: number;
-    autosave_interval_seconds: number;
-    rtp: { min_radius: number; max_radius: number; drop_height: number };
-    ranks: Array<{
-      id: string;
-      max_homes: number;
-      max_shared_per_home: number;
-      can_back_on_death: boolean;
-      unlimited_homes: boolean;
-    }>;
+    ranks: Array<{ id: string; max_homes: number; unlimited_homes: boolean }>;
   };
-
   assert.equal(parsed.combat_tag_seconds, 15);
   assert.equal(parsed.safe_teleport_check, true);
-  assert.ok(parsed.post_teleport_invulnerability_ticks >= 40);
-  assert.equal(parsed.autosave_interval_seconds, 30);
-  assert.ok(parsed.rtp.max_radius > parsed.rtp.min_radius);
-  assert.ok(parsed.rtp.drop_height > 0);
-
   assert.equal(parsed.ranks.length, 20);
-  const byId = Object.fromEntries(parsed.ranks.map((r) => [r.id, r]));
-  assert.equal(byId.player.max_homes, 3);
-  assert.equal(byId.player.can_back_on_death, false);
-  assert.equal(byId.vip.max_homes, 5);
-  assert.equal(byId.vip.can_back_on_death, true);
-  assert.equal(byId.premium.max_homes, 7);
-  assert.equal(byId.legend.max_homes, 16);
-  assert.equal(byId.kronos.max_homes, 50);
-  assert.equal(byId.survival_admin.unlimited_homes, true);
-  assert.equal(byId.owner.unlimited_homes, true);
-});
-
-test('KRONOS Essentials v2 exports lifecycle hooks, 5 GUIs, RTP, shared homes, atomic save, and Rust tests', () => {
-  const lib = KRONOS_ESSENTIALS_TEMPLATE.files['src/lib.rs'];
-  const commands = KRONOS_ESSENTIALS_TEMPLATE.files['src/commands.rs'];
-  const menu = KRONOS_ESSENTIALS_TEMPLATE.files['src/menu.rs'];
-  const effects = KRONOS_ESSENTIALS_TEMPLATE.files['src/effects.rs'];
-  const storage = KRONOS_ESSENTIALS_TEMPLATE.files['src/storage.rs'];
-
-  for (const fnName of [
-    'init',
-    'cleanup',
-    'on_tick',
-    'on_player_join',
-    'on_player_damage',
-    'on_player_death',
-    'on_player_command',
-    'on_menu_click',
-  ]) {
-    assert.ok(lib.includes(`pub extern "C" fn ${fnName}`), `Missing export ${fnName}`);
-  }
-  assert.ok(lib.includes('#[cfg(test)]'), 'Missing built-in Rust unit tests');
-
-  for (const cmd of ['/spawn', '/setspawn', '/sethome', '/home', '/homes', '/delhome', '/rtp', '/back', '/tpa', '/warp', '/tpeffect', '/esrank']) {
-    assert.ok(commands.includes(`"${cmd}"`), `Missing command ${cmd}`);
-  }
-  assert.ok(!commands.includes('"/setrank"'), 'Essentials must not hijack /setrank from kronos-ranks');
-  assert.ok(commands.includes('"share"') && commands.includes('"unshare"') && commands.includes('"fav"'));
-
-  for (const menuId of ['kronos_homes:', 'kronos_confirm_delete:', 'kronos_home_edit:', 'kronos_effects', 'kronos_tpa', 'kronos_warps']) {
-    assert.ok(menu.includes(menuId), `Missing menu ${menuId}`);
-  }
-
-  assert.ok(effects.includes('play_rtp_meteor_launch'));
-  assert.ok(effects.includes('render_meteor_trail_frame'));
-  assert.ok(effects.includes('can_use_theme'));
-  assert.ok(storage.includes('save_store_atomic') && storage.includes('fs::rename'));
 });

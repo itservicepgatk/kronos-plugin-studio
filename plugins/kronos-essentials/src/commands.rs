@@ -1,717 +1,1436 @@
-use crate::effects::{self, can_use_theme, find_theme};
-use crate::host;
-use crate::menu;
-use crate::models::{
-    CombatTag, EssentialsConfig, EssentialsStore, HomePoint, Location, PendingTeleport,
-    PlayerRecord, TpaRequest, WarpPoint,
+use pumpkin_plugin_api::{
+    command::{
+        ArgumentType, Command, CommandError, CommandNode, CommandSender, ConsumedArgs, StringType,
+    },
+    commands::CommandHandler,
+    wit::pumpkin::plugin::command::Arg,
+    Context, Player, Server,
 };
-use std::collections::HashMap;
 
-/// Lightweight deterministic xorshift64 PRNG for /rtp coordinates without extra crates.
-pub fn next_u64(state: &mut u64) -> u64 {
-    let mut x = *state;
-    if x == 0 {
-        x = 0x9e37_79b9_7f4a_7c15;
+use crate::effects::{
+    capture_player_location, execute_teleport, find_safe_rtp_location, legacy, play_chime_sound,
+    play_click_sound, play_error_sound, play_success_sound, resolve_world,
+};
+use crate::menu::{
+    clickable_run, open_homes_menu, send_shared_homes_menu, send_tpa_prompt, send_warps_menu,
+    HomesMenuSnapshot,
+};
+use crate::models::{
+    normalize_key, sanitize_point_name, BedrockMenuAction, EssentialsState, LocationPoint,
+    TpaRequest, DEFAULT_HOME_NAME,
+};
+use crate::storage::{
+    delete_home, delete_warp, list_player_homes, list_shared_homes_for, list_warps, now_ms,
+    resolve_own_home, resolve_shared_home, resolve_warp, save_current_store, set_last_location,
+    share_home, toggle_favorite_home, unshare_home, upsert_home, upsert_warp, with_state,
+    SetHomeOutcome, ShareOutcome, UnshareOutcome,
+};
+
+pub const PERM_PLAYER: &str = "kronos-essentials:player";
+pub const PERM_ADMIN: &str = "kronos-essentials:admin";
+
+fn extract_args(args: &ConsumedArgs) -> String {
+    match args.get_value("args") {
+        Arg::Simple(s) | Arg::Msg(s) => s,
+        _ => String::new(),
     }
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x
 }
 
-pub fn sample_rtp_xz(seed: &mut u64, min_r: u32, max_r: u32) -> (f64, f64) {
-    let span = (max_r.saturating_sub(min_r)).max(1) as u64;
-    let r = (min_r as u64 + (next_u64(seed) % span)) as f64;
-    let angle = ((next_u64(seed) % 36_000) as f64 / 36_000.0) * std::f64::consts::TAU;
-    ((r * angle.cos()).floor() + 0.5, (r * angle.sin()).floor() + 0.5)
-}
-
-pub fn remaining_combat_seconds(combat_tags: &HashMap<String, CombatTag>, player_id: &str, now: u64) -> u64 {
-    combat_tags
-        .get(player_id)
-        .filter(|tag| tag.expires_at_ms > now)
-        .map(|tag| (tag.expires_at_ms - now + 999) / 1000)
-        .unwrap_or(0)
-}
-
-pub fn schedule_teleport(
-    store: &mut EssentialsStore,
-    config: &EssentialsConfig,
-    pending: &mut HashMap<String, PendingTeleport>,
-    combat_tags: &HashMap<String, CombatTag>,
-    player_id: &str,
-    target_label: &str,
-    destination: Location,
-    is_rtp_meteor: bool,
-    dirty: &mut bool,
-) {
-    let now = host::now_ms();
-
-    // 1. Anti-Combat check
-    let combat_left = remaining_combat_seconds(combat_tags, player_id, now);
-    if combat_left > 0 {
-        host::send_chat(
-            player_id,
-            &format!("§c⚔ Вы в бою! Телепортация недоступна ещё §e{}с§c.", combat_left),
-        );
-        host::play_sound(player_id, "minecraft:entity.villager.no", 0.85, 0.8);
-        return;
-    }
-
-    // 2. Safe Teleport check (skip for RTP which already validated surface_y)
-    if !is_rtp_meteor && config.safe_teleport_check && !host::is_location_safe(&destination) {
-        host::send_chat(
-            player_id,
-            &format!(
-                "§c⚠ Точка §e{} §cнебезопасна (лава, блоки или пустота). Телепортация отменена!",
-                target_label
-            ),
-        );
-        host::play_sound(player_id, "minecraft:block.note_block.bass", 0.9, 0.6);
-        return;
-    }
-
-    let player = store
-        .players
-        .entry(player_id.to_string())
-        .or_insert_with(|| PlayerRecord::new(player_id, player_id));
-    let rank = config.effective_rank_for(player);
-
-    // 3. Cooldown check
-    let cooldown_ms = rank.cooldown_seconds * 1000;
-    let since_last = now.saturating_sub(player.last_teleport_ms);
-    if !is_rtp_meteor && cooldown_ms > 0 && player.last_teleport_ms > 0 && since_last < cooldown_ms {
-        let wait_sec = ((cooldown_ms - since_last) + 999) / 1000;
-        host::send_chat(
-            player_id,
-            &format!("§c⏳ Подождите ещё §e{}с §cперед следующим телепортом.", wait_sec),
-        );
-        host::play_sound(player_id, "minecraft:entity.villager.no", 0.7, 1.0);
-        return;
-    }
-
-    let origin = host::get_player_location(player_id);
-    let theme = player.active_theme(&rank).to_string();
-
-    // Instant teleport for high ranks (non-RTP)
-    if rank.warmup_seconds == 0 && !is_rtp_meteor {
-        player.last_location = Some(origin.clone());
-        player.last_teleport_ms = now;
-        *dirty = true;
-        effects::play_arrival_burst(player_id, target_label, &origin, &destination, &theme, config);
-        return;
-    }
-
-    let warmup_secs = if is_rtp_meteor {
-        rank.warmup_seconds.max(1)
-    } else {
-        rank.warmup_seconds
-    };
-
-    host::send_chat(
-        player_id,
-        &format!(
-            "§6✦ §fЗапуск телепортации: §e{}§f ({}с). Не двигайтесь!",
-            target_label, warmup_secs
-        ),
-    );
-    host::play_sound(player_id, "minecraft:block.portal.trigger", 0.55, 1.25);
-
-    pending.insert(
-        player_id.to_string(),
-        PendingTeleport {
-            player_id: player_id.to_string(),
-            target_label: target_label.to_string(),
-            destination,
-            origin,
-            theme,
-            started_at_ms: now,
-            duration_ms: warmup_secs * 1000,
-            ticks_elapsed: 0,
-            last_second_announced: u64::MAX,
-            is_rtp_meteor,
-        },
-    );
-}
-
-pub fn trigger_rtp(
-    store: &mut EssentialsStore,
-    config: &EssentialsConfig,
-    pending: &mut HashMap<String, PendingTeleport>,
-    combat_tags: &HashMap<String, CombatTag>,
-    player_id: &str,
-    dirty: &mut bool,
-) {
-    let now = host::now_ms();
-    let combat_left = remaining_combat_seconds(combat_tags, player_id, now);
-    if combat_left > 0 {
-        host::send_chat(player_id, &format!("§c⚔ Нельзя использовать /rtp в бою ({}с).", combat_left));
-        return;
-    }
-
-    let player = store
-        .players
-        .entry(player_id.to_string())
-        .or_insert_with(|| PlayerRecord::new(player_id, player_id));
-    let rank = config.effective_rank_for(player);
-    let rtp_cd_ms = rank
-        .rtp_cooldown_seconds
-        .unwrap_or(config.rtp.cooldown_seconds)
-        .saturating_mul(1000);
-    let since_rtp = now.saturating_sub(player.last_rtp_ms);
-    if rtp_cd_ms > 0 && player.last_rtp_ms > 0 && since_rtp < rtp_cd_ms {
-        let wait = ((rtp_cd_ms - since_rtp) + 999) / 1000;
-        host::send_chat(player_id, &format!("§c⏳ Кулдаун /rtp: подождите §e{}с§c.", wait));
-        return;
-    }
-
-    let mut seed = now ^ player_id.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-    let mut found: Option<Location> = None;
-
-    for _ in 0..config.rtp.max_attempts {
-        let (x, z) = sample_rtp_xz(&mut seed, config.rtp.min_radius, config.rtp.max_radius);
-        if let Some(surface_y) = host::find_safe_surface_y(&config.rtp.world, x, z) {
-            found = Some(Location {
-                world: config.rtp.world.clone(),
-                x,
-                y: surface_y,
-                z,
-                yaw: 0.0,
-                pitch: 0.0,
-            });
-            break;
+fn require_player(sender: &CommandSender) -> Option<Player> {
+    match sender.as_player() {
+        Some(player) => Some(player),
+        None => {
+            sender.send_error(legacy("§cКоманда доступна только игрокам!"));
+            None
         }
     }
-
-    let Some(dest) = found else {
-        host::send_chat(player_id, "§c✖ Не удалось найти безопасную сушу. Попробуйте ещё раз!");
-        return;
-    };
-
-    player.last_rtp_ms = now;
-    *dirty = true;
-    schedule_teleport(
-        store,
-        config,
-        pending,
-        combat_tags,
-        player_id,
-        "Случайная точка (RTP)",
-        dest,
-        true,
-        dirty,
-    );
 }
 
-pub fn handle_command(
-    store: &mut EssentialsStore,
-    config: &EssentialsConfig,
-    pending: &mut HashMap<String, PendingTeleport>,
-    tpa_requests: &mut HashMap<String, TpaRequest>,
-    combat_tags: &HashMap<String, CombatTag>,
-    dirty: &mut bool,
-    player_id: &str,
-    command: &str,
-) -> bool {
-    let parts: Vec<&str> = command.trim().split_whitespace().collect();
-    if parts.is_empty() {
+/// Checks if the player is under the 15-second Anti-Combat PvP lock.
+/// Never holds a Mutex lock across WIT host calls.
+pub fn is_combat_blocked(player: &Player) -> bool {
+    let p_name = player.get_name();
+    let remaining = with_state(|st| st.combat_remaining_secs(&p_name, now_ms()));
+    if let Some(sec) = remaining {
+        let msg = format!("§c⚔ Вы в бою! Телепортация заблокирована на {}с", sec);
+        player.send_system_message(legacy(&msg), false);
+        player.show_actionbar(legacy(&msg));
+        play_error_sound(player);
+        return true;
+    }
+    false
+}
+
+fn check_tp_cooldown(player: &Player) -> bool {
+    if player.has_permission(PERM_ADMIN) {
         return false;
     }
+    let p_name = player.get_name();
+    let remaining = with_state(|st| {
+        EssentialsState::cooldown_remaining_secs(&mut st.tp_cooldowns, &p_name, now_ms())
+    });
+    if let Some(sec) = remaining {
+        player.send_system_message(
+            legacy(&format!(
+                "§c⏳ Подождите §e{}с §cперед следующей телепортацией.",
+                sec
+            )),
+            false,
+        );
+        play_error_sound(player);
+        return true;
+    }
+    false
+}
 
-    store
-        .players
-        .entry(player_id.to_string())
-        .or_insert_with(|| PlayerRecord::new(player_id, player_id));
+fn apply_tp_cooldown(player: &Player) {
+    if player.has_permission(PERM_ADMIN) {
+        return;
+    }
+    let p_name = player.get_name();
+    let now = now_ms();
+    with_state(|st| {
+        let pdata = st
+            .store
+            .players
+            .get(&normalize_key(&p_name))
+            .cloned()
+            .unwrap_or_default();
+        let profile = st.config.effective_rank_for(&pdata);
+        EssentialsState::set_cooldown(&mut st.tp_cooldowns, &p_name, profile.cooldown_seconds, now);
+    });
+}
 
-    let cmd = parts[0].to_lowercase();
-    match cmd.as_str() {
-        "/spawn" => {
-            if let Some(spawn) = store.spawn.clone() {
-                schedule_teleport(store, config, pending, combat_tags, player_id, "Спавн", spawn, false, dirty);
+fn record_back_location(player: &Player) {
+    let p_name = player.get_name();
+    let loc = capture_player_location(player);
+    with_state(|st| {
+        set_last_location(&mut st.store, &p_name, loc);
+    });
+}
+
+fn build_homes_snapshot(player: &Player) -> HomesMenuSnapshot {
+    let p_name = player.get_name();
+    let is_admin = player.has_permission(PERM_ADMIN);
+    let now = now_ms();
+
+    with_state(|st| {
+        st.cleanup_expired(now);
+        let p_key = normalize_key(&p_name);
+        let pdata = st.store.players.get(&p_key).cloned().unwrap_or_default();
+        let profile = st.config.effective_rank_for(&pdata);
+        let has_back = pdata.last_location.is_some() || pdata.death_location.is_some();
+
+        HomesMenuSnapshot {
+            player_name: p_name.clone(),
+            homes: list_player_homes(&st.store, &p_name),
+            shared_with_me: list_shared_homes_for(&st.store, &p_name),
+            max_homes: profile.max_homes,
+            unlimited: profile.unlimited_homes || is_admin,
+            combat_remaining: st.combat_remaining_secs(&p_name, now),
+            incoming_tpa: st.tpa_requests.get(&p_key).cloned(),
+            warps_count: st.store.warps.len(),
+            has_back,
+        }
+    })
+}
+
+pub fn execute_bedrock_action(player: &Player, server: &Server, action: BedrockMenuAction) {
+    match action {
+        BedrockMenuAction::TeleportHome(name) => {
+            teleport_to_own_home(player, server, Some(&name));
+        }
+        BedrockMenuAction::TeleportShared { owner, home } => {
+            teleport_to_shared_home(player, server, &owner, &home);
+        }
+        BedrockMenuAction::RunSpawn => {
+            run_spawn_teleport(player, server);
+        }
+        BedrockMenuAction::RunRtp => {
+            run_rtp_teleport(player, server);
+        }
+        BedrockMenuAction::RunBack => {
+            run_back_teleport(player, server);
+        }
+        BedrockMenuAction::OpenWarps => {
+            let warps = with_state(|st| list_warps(&st.store));
+            send_warps_menu(player, &warps);
+        }
+    }
+}
+
+// =============================================================================
+// Shared Teleport Helpers
+// =============================================================================
+
+fn teleport_to_own_home(player: &Player, server: &Server, requested: Option<&str>) {
+    if is_combat_blocked(player) || check_tp_cooldown(player) {
+        return;
+    }
+
+    let p_name = player.get_name();
+    let (home_opt, cfg) = with_state(|st| {
+        (
+            resolve_own_home(&mut st.store, &p_name, requested),
+            st.config.clone(),
+        )
+    });
+
+    let Some(home) = home_opt else {
+        play_error_sound(player);
+        let msg = match requested {
+            Some(name) => format!(
+                "§cУ вас нет точки дома '§e{}§c'. Создайте: §e/sethome {}",
+                name, name
+            ),
+            None => "§cУ вас пока нет сохранённых домов. Создайте: §e/sethome home".to_string(),
+        };
+        player.send_system_message(legacy(&msg), false);
+        return;
+    };
+
+    record_back_location(player);
+    match execute_teleport(
+        player,
+        server,
+        &home.location,
+        "§6§l✦ ДОМ",
+        &format!("§e{}", home.name),
+        &cfg,
+        false,
+        true,
+    ) {
+        Ok(()) => {
+            apply_tp_cooldown(player);
+            save_current_store();
+            player.send_system_message(
+                legacy(&format!(
+                    "§6§l✦ KRONOS §8» §aТелепортация на точку дома §e{}§a!",
+                    home.name
+                )),
+                false,
+            );
+        }
+        Err(err) => {
+            play_error_sound(player);
+            player.send_system_message(legacy(&format!("§cОшибка телепортации: {}", err)), false);
+        }
+    }
+}
+
+fn teleport_to_shared_home(player: &Player, server: &Server, owner: &str, home_name: &str) {
+    if is_combat_blocked(player) || check_tp_cooldown(player) {
+        return;
+    }
+
+    let p_name = player.get_name();
+    let (home_opt, cfg) = with_state(|st| {
+        (
+            resolve_shared_home(&mut st.store, &p_name, owner, home_name),
+            st.config.clone(),
+        )
+    });
+
+    let Some(home) = home_opt else {
+        play_error_sound(player);
+        player.send_system_message(
+            legacy(&format!(
+                "§cУ вас нет доступа к дому §e{}:{} §cили он не существует.",
+                owner, home_name
+            )),
+            false,
+        );
+        return;
+    };
+
+    record_back_location(player);
+    match execute_teleport(
+        player,
+        server,
+        &home.location,
+        "§d§l👥 ОБЩИЙ ДОМ",
+        &format!("§f{}:§d{}", owner, home.name),
+        &cfg,
+        false,
+        true,
+    ) {
+        Ok(()) => {
+            apply_tp_cooldown(player);
+            save_current_store();
+            player.send_system_message(
+                legacy(&format!(
+                    "§6§l✦ KRONOS §8» §aТелепортация в общий дом §f{}§7:§d{}§a!",
+                    owner, home.name
+                )),
+                false,
+            );
+        }
+        Err(err) => {
+            play_error_sound(player);
+            player.send_system_message(legacy(&format!("§cОшибка телепортации: {}", err)), false);
+        }
+    }
+}
+
+fn handle_share_home_action(player: &Player, server: &Server, home_name: &str, friend_name: &str) {
+    let Some(clean_home) = sanitize_point_name(home_name) else {
+        play_error_sound(player);
+        player.send_system_message(
+            legacy("§cНекорректное имя дома! Используйте буквы, цифры, '_' или '-'."),
+            false,
+        );
+        return;
+    };
+    let clean_friend = friend_name.trim();
+    if clean_friend.is_empty() || clean_friend.len() > 24 {
+        play_error_sound(player);
+        player.send_system_message(
+            legacy("§eИспользование: §b/sharehome <дом> <ник_друга>"),
+            false,
+        );
+        return;
+    }
+
+    let p_name = player.get_name();
+    let is_admin = player.has_permission(PERM_ADMIN);
+
+    let outcome = with_state(|st| {
+        let pdata = st
+            .store
+            .players
+            .get(&normalize_key(&p_name))
+            .cloned()
+            .unwrap_or_default();
+        let profile = st.config.effective_rank_for(&pdata);
+        let limit = if is_admin {
+            100
+        } else {
+            profile.max_shared_per_home.max(2)
+        };
+        share_home(&mut st.store, &p_name, &clean_home, clean_friend, limit)
+    });
+
+    match outcome {
+        ShareOutcome::Shared { home, friend } => {
+            save_current_store();
+            play_success_sound(player);
+            player.send_system_message(
+                legacy(&format!(
+                    "§6§l✦ KRONOS §8» §aВы открыли доступ к дому §e{} §aигроку §d{}§a! §7(Отмена: /home unshare {} {})",
+                    home, friend, home, friend
+                )),
+                false,
+            );
+
+            // Notify friend if currently online
+            if let Some(friend_player) = server.get_player_by_name(&friend) {
+                play_chime_sound(&friend_player);
+                let msg = legacy(&format!(
+                    "§6§l✦ KRONOS §8» §e{} §aподелился с вами домом §d{}§a! ",
+                    p_name, home
+                ));
+                msg.add_child(clickable_run(
+                    "§a§l[ТП]",
+                    &format!("/home {}:{}", p_name, home),
+                    &format!("§aТелепортироваться в общий дом §f{}:{}", p_name, home),
+                ));
+                friend_player.send_system_message(msg, false);
+            }
+        }
+        ShareOutcome::AlreadyShared { home, friend } => {
+            play_error_sound(player);
+            player.send_system_message(
+                legacy(&format!(
+                    "§eИгрок §f{} §eуже имеет доступ к дому §6{}§e.",
+                    friend, home
+                )),
+                false,
+            );
+        }
+        ShareOutcome::HomeNotFound => {
+            play_error_sound(player);
+            player.send_system_message(
+                legacy(&format!("§cТочка дома '§e{}§c' не найдена!", clean_home)),
+                false,
+            );
+        }
+        ShareOutcome::CannotShareWithSelf => {
+            play_error_sound(player);
+            player.send_system_message(
+                legacy("§cНельзя поделиться домом с самим собой!"),
+                false,
+            );
+        }
+        ShareOutcome::LimitReached { max_shared } => {
+            play_error_sound(player);
+            player.send_system_message(
+                legacy(&format!(
+                    "§cДостигнут лимит общих друзей для этого дома (§e{}§c).",
+                    max_shared
+                )),
+                false,
+            );
+        }
+    }
+}
+
+fn handle_unshare_home_action(player: &Player, home_name: &str, friend_name: &str) {
+    let p_name = player.get_name();
+    let outcome = with_state(|st| unshare_home(&mut st.store, &p_name, home_name, friend_name));
+
+    match outcome {
+        UnshareOutcome::Unshared { home, friend } => {
+            save_current_store();
+            play_success_sound(player);
+            player.send_system_message(
+                legacy(&format!(
+                    "§6§l✦ KRONOS §8» §eДоступ игрока §f{} §eк дому §6{} §eотозван.",
+                    friend, home
+                )),
+                false,
+            );
+        }
+        UnshareOutcome::HomeNotFound => {
+            play_error_sound(player);
+            player.send_system_message(
+                legacy(&format!("§cТочка дома '§e{}§c' не найдена!", home_name)),
+                false,
+            );
+        }
+        UnshareOutcome::FriendNotShared => {
+            play_error_sound(player);
+            player.send_system_message(
+                legacy(&format!(
+                    "§cУ игрока §f{} §cне было доступа к дому §e{}§c.",
+                    friend_name, home_name
+                )),
+                false,
+            );
+        }
+    }
+}
+
+fn run_spawn_teleport(player: &Player, server: &Server) {
+    if is_combat_blocked(player) || check_tp_cooldown(player) {
+        return;
+    }
+
+    let (spawn_loc, cfg) = with_state(|st| {
+        (
+            st.store
+                .spawn
+                .clone()
+                .unwrap_or_else(LocationPoint::default_spawn),
+            st.config.clone(),
+        )
+    });
+
+    record_back_location(player);
+    match execute_teleport(
+        player,
+        server,
+        &spawn_loc,
+        "§6§l✦ СПАВН",
+        "§eДобро пожаловать на спавн",
+        &cfg,
+        false,
+        false,
+    ) {
+        Ok(()) => {
+            apply_tp_cooldown(player);
+            player.send_system_message(
+                legacy("§6§l✦ KRONOS §8» §aВы телепортированы на спавн сервера!"),
+                false,
+            );
+        }
+        Err(err) => {
+            play_error_sound(player);
+            player.send_system_message(legacy(&format!("§cОшибка: {}", err)), false);
+        }
+    }
+}
+
+fn run_back_teleport(player: &Player, server: &Server) {
+    if is_combat_blocked(player) || check_tp_cooldown(player) {
+        return;
+    }
+
+    let p_name = player.get_name();
+    let (target_loc, cfg) = with_state(|st| {
+        let loc = st
+            .store
+            .players
+            .get(&normalize_key(&p_name))
+            .and_then(|p| p.last_location.clone().or_else(|| p.death_location.clone()));
+        (loc, st.config.clone())
+    });
+
+    let Some(loc) = target_loc else {
+        play_error_sound(player);
+        player.send_system_message(
+            legacy("§cУ вас нет сохранённой предыдущей локации!"),
+            false,
+        );
+        return;
+    };
+
+    record_back_location(player);
+    match execute_teleport(
+        player,
+        server,
+        &loc,
+        "§d§l↩ ВОЗВРАТ",
+        "§7Предыдущая позиция",
+        &cfg,
+        false,
+        true,
+    ) {
+        Ok(()) => {
+            apply_tp_cooldown(player);
+            player.send_system_message(
+                legacy("§6§l✦ KRONOS §8» §aВы вернулись на предыдущую локацию!"),
+                false,
+            );
+        }
+        Err(err) => {
+            play_error_sound(player);
+            player.send_system_message(legacy(&format!("§cОшибка: {}", err)), false);
+        }
+    }
+}
+
+fn run_rtp_teleport(player: &Player, server: &Server) {
+    if is_combat_blocked(player) {
+        return;
+    }
+
+    let p_name = player.get_name();
+    let is_admin = player.has_permission(PERM_ADMIN);
+    let now = now_ms();
+
+    let (cd_rem, cfg, spawn_center, mut seed, rtp_cd_secs) = with_state(|st| {
+        let rem = if is_admin {
+            None
+        } else {
+            EssentialsState::cooldown_remaining_secs(&mut st.rtp_cooldowns, &p_name, now)
+        };
+        let pdata = st
+            .store
+            .players
+            .get(&normalize_key(&p_name))
+            .cloned()
+            .unwrap_or_default();
+        let profile = st.config.effective_rank_for(&pdata);
+        let center = st
+            .store
+            .spawn
+            .as_ref()
+            .map(|s| (s.x, s.z))
+            .unwrap_or((0.0, 0.0));
+        let seed_val = st.next_u64();
+        (
+            rem,
+            st.config.clone(),
+            center,
+            seed_val,
+            profile.rtp_cooldown_seconds,
+        )
+    });
+
+    if let Some(sec) = cd_rem {
+        play_error_sound(player);
+        player.send_system_message(
+            legacy(&format!(
+                "§c⏳ Перезарядка /rtp: подождите §e{}с§c.",
+                sec
+            )),
+            false,
+        );
+        return;
+    }
+
+    let Some(world) = resolve_world(server, &cfg.rtp.world) else {
+        play_error_sound(player);
+        player.send_system_message(legacy("§cОшибка: целевой мир для RTP недоступен!"), false);
+        return;
+    };
+
+    let Some(safe_loc) = find_safe_rtp_location(&world, spawn_center.0, spawn_center.1, &cfg.rtp, &mut seed) else {
+        play_error_sound(player);
+        player.send_system_message(
+            legacy("§cНе удалось найти безопасную поверхность для RTP (океан/лава/граница). Попробуйте ещё раз — кулдаун не потрачен."),
+            false,
+        );
+        return;
+    };
+
+    with_state(|st| {
+        st.prng_seed = seed;
+        if !is_admin {
+            EssentialsState::set_cooldown(&mut st.rtp_cooldowns, &p_name, rtp_cd_secs, now_ms());
+        }
+    });
+
+    record_back_location(player);
+
+    // Move already-resolved world directly into teleport (no second unsafe guess!)
+    player.teleport(
+        (safe_loc.x, safe_loc.y, safe_loc.z),
+        Some(safe_loc.yaw),
+        Some(safe_loc.pitch),
+        world,
+    );
+    crate::effects::play_teleport_effects(
+        player,
+        &safe_loc,
+        "§a§l☄ RTP",
+        &format!("§7{:.0}, {:.0}, {:.0}", safe_loc.x, safe_loc.y, safe_loc.z),
+        &cfg,
+        true,
+    );
+
+    player.send_system_message(
+        legacy(&format!(
+            "§6§l✦ KRONOS §8» §aБезопасная случайная телепортация на §eX:{:.0} Y:{:.0} Z:{:.0}§a!",
+            safe_loc.x, safe_loc.y, safe_loc.z
+        )),
+        false,
+    );
+}
+
+// =============================================================================
+// Command Handlers
+// =============================================================================
+
+struct SetHomeCmd;
+impl CommandHandler for SetHomeCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+
+        let raw = extract_args(&args);
+        let requested = raw
+            .trim()
+            .split_whitespace()
+            .next()
+            .unwrap_or(DEFAULT_HOME_NAME);
+
+        let Some(home_name) = sanitize_point_name(requested) else {
+            play_error_sound(&player);
+            sender.send_error(legacy(
+                "§cИмя дома может содержать только буквы, цифры, '_' и '-' (до 24 символов).",
+            ));
+            return Ok(0);
+        };
+
+        let p_name = player.get_name();
+        let is_admin = player.has_permission(PERM_ADMIN);
+        let loc = capture_player_location(&player);
+        let now = now_ms();
+
+        let outcome = with_state(|st| {
+            let pdata = st
+                .store
+                .players
+                .get(&normalize_key(&p_name))
+                .cloned()
+                .unwrap_or_default();
+            let profile = st.config.effective_rank_for(&pdata);
+            upsert_home(
+                &mut st.store,
+                &p_name,
+                &home_name,
+                loc.clone(),
+                profile.max_homes,
+                profile.unlimited_homes || is_admin,
+                now,
+            )
+        });
+
+        match outcome {
+            SetHomeOutcome::Created { name, total } => {
+                save_current_store();
+                play_success_sound(&player);
+                sender.send_system_message(legacy(&format!(
+                    "§6§l✦ KRONOS §8» §aТочка дома §e{} §aсоздана! §7({:.1}, {:.1}, {:.1} | Всего: {})",
+                    name, loc.x, loc.y, loc.z, total
+                )));
+            }
+            SetHomeOutcome::Updated { name, .. } => {
+                save_current_store();
+                play_success_sound(&player);
+                sender.send_system_message(legacy(&format!(
+                    "§6§l✦ KRONOS §8» §aКоординаты дома §e{} §aобновлены! §7({:.1}, {:.1}, {:.1})",
+                    name, loc.x, loc.y, loc.z
+                )));
+            }
+            SetHomeOutcome::LimitReached { max_homes } => {
+                play_error_sound(&player);
+                sender.send_error(legacy(&format!(
+                    "§cДостигнут лимит точек дома (§e{}§c). Удалите лишний дом: §e/homes",
+                    max_homes
+                )));
+            }
+        }
+
+        Ok(0)
+    }
+}
+
+struct HomeCmd;
+impl CommandHandler for HomeCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+
+        let raw = extract_args(&args);
+        let parts: Vec<&str> = raw.split_whitespace().collect();
+
+        if parts.is_empty() {
+            let p_name = player.get_name();
+            let has_homes = with_state(|st| !list_player_homes(&st.store, &p_name).is_empty());
+            if has_homes {
+                teleport_to_own_home(&player, &server, None);
             } else {
-                host::send_chat(player_id, "§c✖ Точка спавна не установлена. Админ: /setspawn");
+                let snap = build_homes_snapshot(&player);
+                open_homes_menu(&player, &snap);
             }
-            true
+            return Ok(0);
         }
 
-        "/setspawn" => {
-            let rank = config.effective_rank_for(&store.players[player_id]);
-            if !rank.can_set_spawn {
-                host::send_chat(player_id, "§c✖ Недостаточно прав для установки спавна.");
-                return true;
+        match parts[0].to_ascii_lowercase().as_str() {
+            "list" | "menu" | "gui" => {
+                let snap = build_homes_snapshot(&player);
+                open_homes_menu(&player, &snap);
             }
-            let loc = host::get_player_location(player_id);
-            store.spawn = Some(loc.clone());
-            *dirty = true;
-            host::send_chat(player_id, &format!("§a✔ Спавн установлен: §f{}", loc.coords_label()));
-            host::play_sound(player_id, "minecraft:ui.toast.challenge_complete", 0.8, 1.1);
-            true
-        }
-
-        "/rtp" => {
-            trigger_rtp(store, config, pending, combat_tags, player_id, dirty);
-            true
-        }
-
-        "/sethome" => {
-            let name = parts.get(1).copied().unwrap_or("home").to_lowercase();
-            if name.len() > 20 || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                host::send_chat(player_id, "§c✖ Название: до 20 символов (буквы, цифры, _ и -).");
-                return true;
+            "share" => {
+                if parts.len() < 3 {
+                    play_error_sound(&player);
+                    sender.send_error(legacy(
+                        "§eИспользование: §b/home share <название_дома> <ник_друга>",
+                    ));
+                    return Ok(0);
+                }
+                handle_share_home_action(&player, &server, parts[1], parts[2]);
             }
-
-            let rank = config.effective_rank_for(&store.players[player_id]);
-            let loc = host::get_player_location(player_id);
-            let requested_icon = parts.get(2).copied().map(|s| {
-                if s.contains(':') { s.to_string() } else { format!("minecraft:{}", s) }
-            });
-
-            let player = store.players.get_mut(player_id).unwrap();
-            if let Some(existing) = player.homes.iter_mut().find(|h| h.name == name) {
-                existing.location = loc.clone();
-                if let Some(icon) = requested_icon {
-                    existing.icon = icon;
+            "unshare" | "revoke" => {
+                if parts.len() < 3 {
+                    play_error_sound(&player);
+                    sender.send_error(legacy(
+                        "§eИспользование: §b/home unshare <название_дома> <ник_друга>",
+                    ));
+                    return Ok(0);
                 }
-                host::send_chat(
-                    player_id,
-                    &format!("§a✔ Точка дома §e{} §aобновлена: §f{}", name, loc.coords_label()),
-                );
-            } else {
-                if !rank.unlimited_homes && player.homes.len() >= rank.max_homes {
-                    let next_info = config
-                        .next_donate_after(&rank)
-                        .map(|n| format!(" (донат {} даёт {} меток!)", n.display_prefix.trim(), n.max_homes))
-                        .unwrap_or_default();
-                    host::send_chat(
-                        player_id,
-                        &format!("§c✖ Лимит домов исчерпан: §e{}/{}§c{}", player.homes.len(), rank.max_homes, next_info),
-                    );
-                    host::play_sound(player_id, "minecraft:entity.villager.no", 0.8, 1.0);
-                    return true;
-                }
-
-                let icon = requested_icon.unwrap_or_else(|| {
-                    config
-                        .home_icons
-                        .get(player.homes.len() % config.home_icons.len().max(1))
-                        .cloned()
-                        .unwrap_or_else(|| "minecraft:red_bed".to_string())
-                });
-
-                let is_first = player.homes.is_empty();
-                player.homes.push(HomePoint {
-                    name: name.clone(),
-                    icon,
-                    location: loc.clone(),
-                    created_at_ms: host::now_ms(),
-                    uses: 0,
-                    is_favorite: is_first,
-                    shared_with: Vec::new(),
-                });
-
-                let limit_str = if rank.unlimited_homes { "∞".to_string() } else { rank.max_homes.to_string() };
-                host::send_chat(
-                    player_id,
-                    &format!("§a✔ Дом §e{} §aсохранён! §8[§e{}/{}§8] §7• §f{}", name, player.homes.len(), limit_str, loc.coords_label()),
-                );
+                handle_unshare_home_action(&player, parts[1], parts[2]);
             }
-
-            host::spawn_particle(&loc.world, "minecraft:happy_villager", loc.x, loc.y + 1.0, loc.z, 14, 0.25);
-            host::play_sound(player_id, "minecraft:entity.player.levelup", 0.7, 1.35);
-            *dirty = true;
-            true
-        }
-
-        "/home" => {
-            if parts.len() == 1 {
-                menu::open_homes_menu(store, config, tpa_requests, combat_tags, player_id, 0);
-                return true;
-            }
-
-            // Subcommands: /home share <дом> <игрок>, /home unshare <дом> <игрок>, /home fav <дом>
-            match parts[1].to_lowercase().as_str() {
-                "share" => {
-                    if parts.len() < 4 {
-                        host::send_chat(player_id, "§eИспользование: §f/home share <дом> <игрок>");
-                        return true;
-                    }
-                    let home_name = parts[2].to_lowercase();
-                    let friend = parts[3].to_string();
-                    let rank = config.effective_rank_for(&store.players[player_id]);
-                    let player = store.players.get_mut(player_id).unwrap();
-                    if let Some(home) = player.homes.iter_mut().find(|h| h.name == home_name) {
-                        if home.shared_with.iter().any(|u| u.eq_ignore_ascii_case(&friend)) {
-                            host::send_chat(player_id, &format!("§eИгрок {} уже имеет доступ к дому {}.", friend, home_name));
-                            return true;
-                        }
-                        if home.shared_with.len() >= rank.max_shared_per_home {
-                            host::send_chat(
-                                player_id,
-                                &format!("§c✖ Лимит друзей для этого дома: §e{}", rank.max_shared_per_home),
-                            );
-                            return true;
-                        }
-                        home.shared_with.push(friend.clone());
-                        *dirty = true;
-                        host::send_chat(
-                            player_id,
-                            &format!("§a✔ Игроку §e{} §aвыдан доступ к дому §e{}§a! Телепорт: §f/home {}:{}", friend, home_name, player_id, home_name),
-                        );
-                        host::send_chat(
-                            &friend,
-                            &format!("§6✦ §e{} §fподелился с вами домом §e{}§f! Введите: §a/home {}:{}", player_id, home_name, player_id, home_name),
-                        );
-                    } else {
-                        host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден.", home_name));
-                    }
-                    return true;
+            "fav" | "favorite" => {
+                if parts.len() < 2 {
+                    play_error_sound(&player);
+                    sender.send_error(legacy("§eИспользование: §b/home fav <название_дома>"));
+                    return Ok(0);
                 }
-                "unshare" => {
-                    if parts.len() < 4 {
-                        host::send_chat(player_id, "§eИспользование: §f/home unshare <дом> <игрок>");
-                        return true;
+                let p_name = player.get_name();
+                let res = with_state(|st| toggle_favorite_home(&mut st.store, &p_name, parts[1]));
+                match res {
+                    Some(true) => {
+                        save_current_store();
+                        play_success_sound(&player);
+                        sender.send_system_message(legacy(&format!(
+                            "§6§l✦ KRONOS §8» §6★ Дом §e{} §6назначен главным!",
+                            parts[1]
+                        )));
                     }
-                    let home_name = parts[2].to_lowercase();
-                    let friend = parts[3];
-                    let player = store.players.get_mut(player_id).unwrap();
-                    if let Some(home) = player.homes.iter_mut().find(|h| h.name == home_name) {
-                        let before = home.shared_with.len();
-                        home.shared_with.retain(|u| !u.eq_ignore_ascii_case(friend));
-                        if home.shared_with.len() < before {
-                            *dirty = true;
-                            host::send_chat(player_id, &format!("§a✔ Доступ §e{} §aк дому §e{} §aотозван.", friend, home_name));
-                        } else {
-                            host::send_chat(player_id, "§c✖ Этот игрок не был в списке доступа.");
-                        }
-                    } else {
-                        host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден.", home_name));
-                    }
-                    return true;
-                }
-                "fav" => {
-                    let Some(home_name) = parts.get(2) else {
-                        host::send_chat(player_id, "§eИспользование: §f/home fav <название>");
-                        return true;
-                    };
-                    let key = home_name.to_lowercase();
-                    let player = store.players.get_mut(player_id).unwrap();
-                    if player.homes.iter().any(|h| h.name == key) {
-                        for h in &mut player.homes {
-                            h.is_favorite = h.name == key;
-                        }
-                        *dirty = true;
-                        host::send_chat(player_id, &format!("§6★ Главный дом установлен: §e{}", key));
-                    } else {
-                        host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден.", key));
-                    }
-                    return true;
-                }
-                _ => {}
-            }
-
-            // Shared home teleport: /home owner:home_name
-            if let Some((owner_id, shared_home_name)) = parts[1].split_once(':') {
-                let target_name = shared_home_name.to_lowercase();
-                let found = store.players.get(owner_id).and_then(|owner| {
-                    owner.homes.iter().find(|h| {
-                        h.name == target_name
-                            && (owner_id.eq_ignore_ascii_case(player_id)
-                                || h.shared_with.iter().any(|u| u.eq_ignore_ascii_case(player_id)))
-                    }).map(|h| h.location.clone())
-                });
-                match found {
-                    Some(loc) => {
-                        schedule_teleport(
-                            store,
-                            config,
-                            pending,
-                            combat_tags,
-                            player_id,
-                            &format!("Дом {}:{}", owner_id, target_name),
-                            loc,
-                            false,
-                            dirty,
-                        );
+                    Some(false) => {
+                        save_current_store();
+                        play_success_sound(&player);
+                        sender.send_system_message(legacy(&format!(
+                            "§6§l✦ KRONOS §8» §7Отметка главного дома снята с §e{}§7.",
+                            parts[1]
+                        )));
                     }
                     None => {
-                        host::send_chat(player_id, "§c✖ Общий дом не найден или у вас нет доступа.");
+                        play_error_sound(&player);
+                        sender.send_error(legacy(&format!(
+                            "§cТочка дома '§e{}§c' не найдена!",
+                            parts[1]
+                        )));
                     }
                 }
-                return true;
             }
-
-            // Own home teleport
-            let target = parts[1].to_lowercase();
-            let found = store.players.get_mut(player_id).and_then(|p| {
-                p.homes.iter_mut().find(|h| h.name == target).map(|h| {
-                    h.uses += 1;
-                    (h.name.clone(), h.location.clone())
-                })
-            });
-
-            match found {
-                Some((name, loc)) => {
-                    *dirty = true;
-                    schedule_teleport(store, config, pending, combat_tags, player_id, &format!("Дом {}", name), loc, false, dirty);
-                }
-                None => {
-                    host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден. Откройте меню: §f/homes", target));
+            target => {
+                if let Some((owner, home_name)) = target.split_once(':') {
+                    teleport_to_shared_home(&player, &server, owner, home_name);
+                } else {
+                    teleport_to_own_home(&player, &server, Some(target));
                 }
             }
-            true
         }
 
-        "/homes" | "/menu" | "/tp" => {
-            menu::open_homes_menu(store, config, tpa_requests, combat_tags, player_id, 0);
-            true
-        }
-
-        "/delhome" => {
-            let Some(target) = parts.get(1) else {
-                host::send_chat(player_id, "§eИспользование: §f/delhome <название>");
-                return true;
-            };
-            let target = target.to_lowercase();
-            let player = store.players.get_mut(player_id).unwrap();
-            let before = player.homes.len();
-            player.homes.retain(|h| h.name != target);
-            if player.homes.len() < before {
-                *dirty = true;
-                host::send_chat(player_id, &format!("§a✔ Дом §e{} §aудалён.", target));
-                host::play_sound(player_id, "minecraft:entity.item.break", 0.7, 1.0);
-            } else {
-                host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден.", target));
-            }
-            true
-        }
-
-        "/warps" => {
-            menu::open_warps_menu(store, config, player_id);
-            true
-        }
-
-        "/warp" => {
-            let Some(name) = parts.get(1) else {
-                menu::open_warps_menu(store, config, player_id);
-                return true;
-            };
-            let key = name.to_lowercase();
-            if let Some(warp) = store.warps.get(&key).cloned() {
-                let rank = config.effective_rank_for(&store.players[player_id]);
-                if rank.tier < warp.min_tier {
-                    host::send_chat(player_id, &format!("§c🔒 Варп доступен с ранга {}", config.rank_name_for_tier(warp.min_tier)));
-                    return true;
-                }
-                schedule_teleport(store, config, pending, combat_tags, player_id, &format!("Варп {}", warp.name), warp.location, false, dirty);
-            } else {
-                host::send_chat(player_id, &format!("§c✖ Варп §e{} §cне найден. Список: /warps", key));
-            }
-            true
-        }
-
-        "/setwarp" => {
-            let rank = config.effective_rank_for(&store.players[player_id]);
-            if !rank.can_set_warp {
-                host::send_chat(player_id, "§c✖ Недостаточно прав для создания варпа.");
-                return true;
-            }
-            let Some(name) = parts.get(1) else {
-                host::send_chat(player_id, "§eИспользование: §f/setwarp <название> [описание]");
-                return true;
-            };
-            let key = name.to_lowercase();
-            let desc = if parts.len() > 2 { parts[2..].join(" ") } else { "Общая точка телепортации".to_string() };
-            let loc = host::get_player_location(player_id);
-            store.warps.insert(
-                key.clone(),
-                WarpPoint {
-                    name: key.clone(),
-                    icon: "minecraft:compass".to_string(),
-                    description: desc,
-                    location: loc.clone(),
-                    min_tier: 0,
-                },
-            );
-            *dirty = true;
-            host::send_chat(player_id, &format!("§a✔ Варп §b{} §aсоздан: §f{}", key, loc.coords_label()));
-            true
-        }
-
-        "/delwarp" => {
-            let rank = config.effective_rank_for(&store.players[player_id]);
-            if !rank.can_set_warp {
-                host::send_chat(player_id, "§c✖ Недостаточно прав.");
-                return true;
-            }
-            let Some(name) = parts.get(1) else {
-                host::send_chat(player_id, "§eИспользование: §f/delwarp <название>");
-                return true;
-            };
-            if store.warps.remove(&name.to_lowercase()).is_some() {
-                *dirty = true;
-                host::send_chat(player_id, &format!("§a✔ Варп §b{} §aудалён.", name));
-            } else {
-                host::send_chat(player_id, "§c✖ Варп не найден.");
-            }
-            true
-        }
-
-        "/back" => {
-            let rank = config.effective_rank_for(&store.players[player_id]);
-            let player = &store.players[player_id];
-            if rank.can_back_on_death {
-                if let Some(death_loc) = player.last_death_location.clone() {
-                    schedule_teleport(store, config, pending, combat_tags, player_id, "Точка смерти", death_loc, false, dirty);
-                    return true;
-                }
-            } else if player.last_death_location.is_some() && player.last_location.is_none() {
-                host::send_chat(player_id, "§e✦ Возврат на точку смерти доступен со статуса §e[VIP]§e!");
-                return true;
-            }
-
-            if let Some(loc) = player.last_location.clone() {
-                schedule_teleport(store, config, pending, combat_tags, player_id, "Прошлая точка", loc, false, dirty);
-            } else {
-                host::send_chat(player_id, "§c✖ Нет сохранённой предыдущей локации.");
-            }
-            true
-        }
-
-        "/tpa" | "/tpahere" => {
-            let Some(target_id) = parts.get(1) else {
-                host::send_chat(player_id, &format!("§eИспользование: §f{} <игрок>", cmd));
-                return true;
-            };
-            if *target_id == player_id {
-                host::send_chat(player_id, "§c✖ Нельзя отправить запрос самому себе.");
-                return true;
-            }
-            let summon_here = cmd == "/tpahere";
-            let from_name = store.players[player_id].username.clone();
-            let expires = host::now_ms() + config.tpa_timeout_seconds * 1000;
-
-            tpa_requests.insert(
-                target_id.to_string(),
-                TpaRequest {
-                    from_id: player_id.to_string(),
-                    from_name: from_name.clone(),
-                    to_id: target_id.to_string(),
-                    summon_here,
-                    expires_at_ms: expires,
-                },
-            );
-
-            host::send_chat(player_id, &format!("§6✦ §fTPA-запрос отправлен игроку §e{}§f.", target_id));
-            let action_txt = if summon_here {
-                "приглашает вас к себе"
-            } else {
-                "хочет телепортироваться к вам"
-            };
-            host::send_chat(
-                target_id,
-                &format!(
-                    "§6✦ §e{} §f{}. Введите §a/tpaccept§f, §c/tpdeny §fили откройте §e/homes §7({}с)",
-                    from_name, action_txt, config.tpa_timeout_seconds
-                ),
-            );
-            host::play_sound(target_id, "minecraft:entity.experience_orb.pickup", 0.8, 1.2);
-            true
-        }
-
-        "/tpaccept" => {
-            let now = host::now_ms();
-            match tpa_requests.remove(player_id) {
-                Some(req) if now <= req.expires_at_ms => {
-                    if req.summon_here {
-                        let dest = host::get_player_location(&req.from_id);
-                        schedule_teleport(store, config, pending, combat_tags, &req.to_id, &format!("Игрок {}", req.from_name), dest, false, dirty);
-                    } else {
-                        let dest = host::get_player_location(&req.to_id);
-                        schedule_teleport(store, config, pending, combat_tags, &req.from_id, &format!("Игрок {}", req.to_id), dest, false, dirty);
-                    }
-                    host::send_chat(player_id, "§a✔ Запрос принят!");
-                }
-                _ => host::send_chat(player_id, "§c✖ У вас нет активных TPA-запросов."),
-            }
-            true
-        }
-
-        "/tpdeny" => {
-            if let Some(req) = tpa_requests.remove(player_id) {
-                host::send_chat(player_id, "§c✖ Запрос отклонён.");
-                host::send_chat(&req.from_id, &format!("§c✖ Игрок §e{} §cотклонил ваш запрос.", player_id));
-            } else {
-                host::send_chat(player_id, "§c✖ Нет активных запросов.");
-            }
-            true
-        }
-
-        "/tpeffect" => {
-            let Some(theme_arg) = parts.get(1) else {
-                menu::open_effects_menu(store, config, player_id);
-                return true;
-            };
-            let rank = config.effective_rank_for(&store.players[player_id]);
-            let spec = find_theme(theme_arg);
-            if !spec.id.eq_ignore_ascii_case(theme_arg) {
-                host::send_chat(player_id, "§c✖ Неизвестная тема. Откройте каталог: §f/tpeffect");
-                return true;
-            }
-            if !can_use_theme(rank.tier, spec.id) {
-                host::send_chat(
-                    player_id,
-                    &format!("§c🔒 Эффект {} §cдоступен со статуса {}", spec.label, config.rank_name_for_tier(spec.min_tier)),
-                );
-                return true;
-            }
-            if let Some(p) = store.players.get_mut(player_id) {
-                p.selected_theme = Some(spec.id.to_string());
-                *dirty = true;
-            }
-            host::send_chat(player_id, &format!("§a✔ Выбран эффект телепортации: {}", spec.label));
-            true
-        }
-
-        "/esrank" => {
-            let caller_rank = config.effective_rank_for(&store.players[player_id]);
-            if !caller_rank.can_set_spawn {
-                host::send_chat(player_id, "§c✖ Только старший администратор может менять статусы.");
-                return true;
-            }
-            if parts.len() < 3 {
-                host::send_chat(player_id, "§eИспользование: §f/esrank <игрок> <ранг из 20> §7(основная команда: /rank set)");
-                return true;
-            }
-            let Some(new_profile) = config.find_rank(parts[2]).cloned() else {
-                host::send_chat(player_id, &format!("§c✖ Неизвестный ранг §e{}§c. Список: §f/rank list", parts[2]));
-                return true;
-            };
-            let target_id = store
-                .players
-                .iter()
-                .find(|(_, rec)| rec.username.eq_ignore_ascii_case(parts[1]))
-                .map(|(pid, _)| pid.clone())
-                .unwrap_or_else(|| parts[1].to_string());
-            let target_player = store
-                .players
-                .entry(target_id.clone())
-                .or_insert_with(|| PlayerRecord::new(&target_id, parts[1]));
-            target_player.rank = new_profile.id.clone();
-            *dirty = true;
-
-            let limit_txt = if new_profile.unlimited_homes { "∞".to_string() } else { new_profile.max_homes.to_string() };
-            host::send_chat(
-                player_id,
-                &format!("§a✔ Игроку §e{} §aвыдан статус {}§a(лимит домов: §e{}§a)", parts[1], new_profile.display_prefix, limit_txt),
-            );
-            host::send_chat(
-                &target_id,
-                &format!("§6✦ §fВаш статус обновлён до {}§f! Новый лимит домов: §e{}", new_profile.display_prefix, limit_txt),
-            );
-            true
-        }
-
-        _ => false,
+        Ok(0)
     }
+}
+
+struct HomesMenuCmd;
+impl CommandHandler for HomesMenuCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        let snap = build_homes_snapshot(&player);
+        open_homes_menu(&player, &snap);
+        Ok(0)
+    }
+}
+
+struct ShareHomeCmd;
+impl CommandHandler for ShareHomeCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+
+        let raw = extract_args(&args);
+        let parts: Vec<&str> = raw.split_whitespace().collect();
+
+        if parts.is_empty() || parts[0].eq_ignore_ascii_case("list") {
+            let p_name = player.get_name();
+            let (own, shared) = with_state(|st| {
+                (
+                    list_player_homes(&st.store, &p_name),
+                    list_shared_homes_for(&st.store, &p_name),
+                )
+            });
+            send_shared_homes_menu(&player, &own, &shared);
+            return Ok(0);
+        }
+
+        if parts[0].eq_ignore_ascii_case("unshare") || parts[0].eq_ignore_ascii_case("remove") {
+            if parts.len() < 3 {
+                play_error_sound(&player);
+                sender.send_error(legacy(
+                    "§eИспользование: §b/sharehome remove <дом> <ник_друга>",
+                ));
+                return Ok(0);
+            }
+            handle_unshare_home_action(&player, parts[1], parts[2]);
+            return Ok(0);
+        }
+
+        if parts.len() < 2 {
+            play_error_sound(&player);
+            sender.send_error(legacy(
+                "§eИспользование: §b/sharehome <дом> <ник_друга> §7или §b/sharehome list",
+            ));
+            return Ok(0);
+        }
+
+        handle_share_home_action(&player, &server, parts[0], parts[1]);
+        Ok(0)
+    }
+}
+
+struct DelHomeCmd;
+impl CommandHandler for DelHomeCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+
+        let raw = extract_args(&args);
+        let home_name = raw.trim().split_whitespace().next().unwrap_or("");
+        if home_name.is_empty() {
+            play_error_sound(&player);
+            sender.send_error(legacy("§eИспользование: §b/delhome <название>"));
+            return Ok(0);
+        }
+
+        let p_name = player.get_name();
+        let removed = with_state(|st| delete_home(&mut st.store, &p_name, home_name));
+
+        if removed {
+            save_current_store();
+            play_success_sound(&player);
+            sender.send_system_message(legacy(&format!(
+                "§6§l✦ KRONOS §8» §cТочка дома '§e{}§c' удалена.",
+                home_name
+            )));
+        } else {
+            play_error_sound(&player);
+            sender.send_error(legacy(&format!(
+                "§cТочка дома '§e{}§c' не найдена!",
+                home_name
+            )));
+        }
+
+        Ok(0)
+    }
+}
+
+struct SpawnCmd;
+impl CommandHandler for SpawnCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        run_spawn_teleport(&player, &server);
+        Ok(0)
+    }
+}
+
+struct SetSpawnCmd;
+impl CommandHandler for SetSpawnCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        let loc = capture_player_location(&player);
+        with_state(|st| {
+            st.store.spawn = Some(loc.clone());
+        });
+        save_current_store();
+        play_success_sound(&player);
+        sender.send_system_message(legacy(&format!(
+            "§6§l✦ KRONOS §8» §aТочка спавна сервера обновлена: §e{} ({:.1}, {:.1}, {:.1})",
+            loc.world, loc.x, loc.y, loc.z
+        )));
+        Ok(0)
+    }
+}
+
+struct BackCmd;
+impl CommandHandler for BackCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        run_back_teleport(&player, &server);
+        Ok(0)
+    }
+}
+
+struct RtpCmd;
+impl CommandHandler for RtpCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        run_rtp_teleport(&player, &server);
+        Ok(0)
+    }
+}
+
+struct WarpCmd;
+impl CommandHandler for WarpCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+
+        let raw = extract_args(&args);
+        let warp_name = raw.trim().split_whitespace().next().unwrap_or("");
+        if warp_name.is_empty() {
+            let warps = with_state(|st| list_warps(&st.store));
+            send_warps_menu(&player, &warps);
+            return Ok(0);
+        }
+
+        if is_combat_blocked(&player) || check_tp_cooldown(&player) {
+            return Ok(0);
+        }
+
+        let (warp_opt, cfg) = with_state(|st| {
+            (
+                resolve_warp(&mut st.store, warp_name),
+                st.config.clone(),
+            )
+        });
+
+        let Some(warp) = warp_opt else {
+            play_error_sound(&player);
+            sender.send_error(legacy(&format!(
+                "§cВарп '§e{}§c' не найден! Список: §e/warps",
+                warp_name
+            )));
+            return Ok(0);
+        };
+
+        record_back_location(&player);
+        match execute_teleport(
+            &player,
+            &server,
+            &warp.location,
+            "§b§l⚑ ВАРП",
+            &format!("§e{}", warp.name),
+            &cfg,
+            false,
+            false,
+        ) {
+            Ok(()) => {
+                apply_tp_cooldown(&player);
+                save_current_store();
+                sender.send_system_message(legacy(&format!(
+                    "§6§l✦ KRONOS §8» §aВы телепортированы на варп §b{}§a!",
+                    warp.name
+                )));
+            }
+            Err(err) => {
+                play_error_sound(&player);
+                sender.send_error(legacy(&format!("§cОшибка: {}", err)));
+            }
+        }
+
+        Ok(0)
+    }
+}
+
+struct WarpsListCmd;
+impl CommandHandler for WarpsListCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        let warps = with_state(|st| list_warps(&st.store));
+        send_warps_menu(&player, &warps);
+        Ok(0)
+    }
+}
+
+struct SetWarpCmd;
+impl CommandHandler for SetWarpCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+
+        let raw = extract_args(&args);
+        let mut parts = raw.split_whitespace();
+        let Some(raw_name) = parts.next() else {
+            play_error_sound(&player);
+            sender.send_error(legacy("§eИспользование: §b/setwarp <название> [описание]"));
+            return Ok(0);
+        };
+
+        let Some(warp_name) = sanitize_point_name(raw_name) else {
+            play_error_sound(&player);
+            sender.send_error(legacy(
+                "§cНекорректное название варпа (только буквы, цифры, '_' и '-').",
+            ));
+            return Ok(0);
+        };
+
+        let description: String = parts.collect::<Vec<&str>>().join(" ");
+        let loc = capture_player_location(&player);
+        let creator = player.get_name();
+
+        with_state(|st| {
+            upsert_warp(&mut st.store, &warp_name, loc.clone(), description, creator);
+        });
+        save_current_store();
+        play_success_sound(&player);
+        sender.send_system_message(legacy(&format!(
+            "§6§l✦ KRONOS §8» §aВарп §b{} §aсоздан! §7({:.1}, {:.1}, {:.1})",
+            warp_name, loc.x, loc.y, loc.z
+        )));
+        Ok(0)
+    }
+}
+
+struct DelWarpCmd;
+impl CommandHandler for DelWarpCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        _server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let raw = extract_args(&args);
+        let warp_name = raw.trim().split_whitespace().next().unwrap_or("");
+        if warp_name.is_empty() {
+            sender.send_error(legacy("§eИспользование: §b/delwarp <название>"));
+            return Ok(0);
+        }
+
+        let removed = with_state(|st| delete_warp(&mut st.store, warp_name));
+        if removed {
+            save_current_store();
+            sender.send_system_message(legacy(&format!(
+                "§6§l✦ KRONOS §8» §cВарп '§e{}§c' удалён.",
+                warp_name
+            )));
+        } else {
+            sender.send_error(legacy(&format!("§cВарп '§e{}§c' не найден!", warp_name)));
+        }
+
+        Ok(0)
+    }
+}
+
+struct TpaCmd {
+    bring_here: bool,
+}
+impl CommandHandler for TpaCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        if is_combat_blocked(&player) {
+            return Ok(0);
+        }
+
+        let raw = extract_args(&args);
+        let target_name = raw.trim().split_whitespace().next().unwrap_or("");
+        if target_name.is_empty() {
+            play_error_sound(&player);
+            let cmd = if self.bring_here { "/tpahere" } else { "/tpa" };
+            sender.send_error(legacy(&format!("§eИспользование: §b{} <ник_игрока>", cmd)));
+            return Ok(0);
+        }
+
+        let requester_name = player.get_name();
+        if requester_name.eq_ignore_ascii_case(target_name) {
+            play_error_sound(&player);
+            sender.send_error(legacy("§cНельзя отправить запрос самому себе!"));
+            return Ok(0);
+        }
+
+        let Some(target_player) = server.get_player_by_name(target_name) else {
+            play_error_sound(&player);
+            sender.send_error(legacy(&format!("§cИгрок '§e{}§c' не в сети!", target_name)));
+            return Ok(0);
+        };
+
+        let exact_target = target_player.get_name();
+        let now = now_ms();
+        let timeout_secs = with_state(|st| {
+            let timeout = st.config.tpa_timeout_seconds.max(15);
+            st.tpa_requests.insert(
+                normalize_key(&exact_target),
+                TpaRequest {
+                    requester: requester_name.clone(),
+                    target: exact_target.clone(),
+                    bring_target_here: self.bring_here,
+                    expires_at_ms: now.saturating_add(timeout * 1000),
+                },
+            );
+            timeout
+        });
+
+        play_success_sound(&player);
+        sender.send_system_message(legacy(&format!(
+            "§6§l✦ KRONOS §8» §aЗапрос телепортации отправлен игроку §e{} §7(действует {}с).",
+            exact_target, timeout_secs
+        )));
+
+        play_chime_sound(&target_player);
+        send_tpa_prompt(&target_player, &requester_name, self.bring_here);
+        Ok(0)
+    }
+}
+
+struct TpAcceptCmd;
+impl CommandHandler for TpAcceptCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        if is_combat_blocked(&player) {
+            return Ok(0);
+        }
+
+        let p_name = player.get_name();
+        let now = now_ms();
+        let (req_opt, cfg) = with_state(|st| {
+            st.cleanup_expired(now);
+            (st.tpa_requests.remove(&normalize_key(&p_name)), st.config.clone())
+        });
+
+        let Some(req) = req_opt else {
+            play_error_sound(&player);
+            sender.send_error(legacy("§cУ вас нет активных входящих запросов /tpa."));
+            return Ok(0);
+        };
+
+        let Some(other_player) = server.get_player_by_name(&req.requester) else {
+            play_error_sound(&player);
+            sender.send_error(legacy(&format!(
+                "§cИгрок §e{} §cвышел с сервера.",
+                req.requester
+            )));
+            return Ok(0);
+        };
+
+        if is_combat_blocked(&other_player) {
+            play_error_sound(&player);
+            sender.send_error(legacy(&format!(
+                "§cИгрок §e{} §cсейчас в бою — телепортация отменена!",
+                req.requester
+            )));
+            return Ok(0);
+        }
+
+        let (traveler, dest_player) = if req.bring_target_here {
+            (&player, &other_player)
+        } else {
+            (&other_player, &player)
+        };
+
+        let dest_loc = capture_player_location(dest_player);
+        let dest_name = dest_player.get_name();
+        record_back_location(traveler);
+
+        match execute_teleport(
+            traveler,
+            &server,
+            &dest_loc,
+            "§6§l✦ TPA",
+            &format!("§eК игроку {}", dest_name),
+            &cfg,
+            false,
+            false,
+        ) {
+            Ok(()) => {
+                traveler.send_system_message(
+                    legacy(&format!(
+                        "§6§l✦ KRONOS §8» §aВы телепортированы к игроку §e{}§a!",
+                        dest_name
+                    )),
+                    false,
+                );
+                dest_player.send_system_message(
+                    legacy(&format!(
+                        "§6§l✦ KRONOS §8» §aИгрок §e{} §aтелепортирован к вам!",
+                        traveler.get_name()
+                    )),
+                    false,
+                );
+            }
+            Err(err) => {
+                play_error_sound(&player);
+                sender.send_error(legacy(&format!("§cОшибка телепортации: {}", err)));
+            }
+        }
+
+        Ok(0)
+    }
+}
+
+struct TpDenyCmd;
+impl CommandHandler for TpDenyCmd {
+    fn handle(
+        &self,
+        sender: CommandSender,
+        server: Server,
+        _args: ConsumedArgs,
+    ) -> Result<i32, CommandError> {
+        let Some(player) = require_player(&sender) else {
+            return Ok(0);
+        };
+        let p_name = player.get_name();
+        let req_opt = with_state(|st| st.tpa_requests.remove(&normalize_key(&p_name)));
+
+        let Some(req) = req_opt else {
+            play_error_sound(&player);
+            sender.send_error(legacy("§cУ вас нет входящих запросов /tpa."));
+            return Ok(0);
+        };
+
+        play_click_sound(&player);
+        sender.send_system_message(legacy(&format!(
+            "§6§l✦ KRONOS §8» §eЗапрос от §f{} §eотклонён.",
+            req.requester
+        )));
+
+        if let Some(other) = server.get_player_by_name(&req.requester) {
+            play_error_sound(&other);
+            other.send_system_message(
+                legacy(&format!(
+                    "§cИгрок §e{} §cотклонил ваш запрос на телепортацию.",
+                    p_name
+                )),
+                false,
+            );
+        }
+
+        Ok(0)
+    }
+}
+
+// =============================================================================
+// Registration
+// =============================================================================
+
+pub fn register_all(context: &Context) {
+    let sethome = Command::new(&["sethome".into()], "Установить точку дома (/sethome [имя])")
+        .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(SetHomeCmd))
+        .execute(SetHomeCmd);
+    context.register_command(sethome, PERM_PLAYER);
+
+    let home = Command::new(
+        &["home".into(), "h".into()],
+        "Телепорт домой, share/unshare/fav (/home [имя | владелец:дом])",
+    )
+    .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(HomeCmd))
+    .execute(HomeCmd);
+    context.register_command(home, PERM_PLAYER);
+
+    let homes = Command::new(
+        &["homes".into()],
+        "Интерактивное меню ваших домов и быстрых телепортов",
+    )
+    .execute(HomesMenuCmd);
+    context.register_command(homes, PERM_PLAYER);
+
+    let menu = Command::new(
+        &["menu".into(), "hmenu".into()],
+        "Открыть интерактивный хаб KRONOS Essentials",
+    )
+    .execute(HomesMenuCmd);
+    context.register_command(menu, PERM_PLAYER);
+
+    let sharehome = Command::new(
+        &["sharehome".into(), "sharedhomes".into()],
+        "Поделиться домом с другом или открыть список общих домов",
+    )
+    .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(ShareHomeCmd))
+    .execute(ShareHomeCmd);
+    context.register_command(sharehome, PERM_PLAYER);
+
+    let delhome = Command::new(&["delhome".into()], "Удалить точку дома (/delhome <имя>)")
+        .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(DelHomeCmd))
+        .execute(DelHomeCmd);
+    context.register_command(delhome, PERM_PLAYER);
+
+    let spawn = Command::new(&["spawn".into()], "Телепортироваться на спавн сервера")
+        .execute(SpawnCmd);
+    context.register_command(spawn, PERM_PLAYER);
+
+    let setspawn = Command::new(&["setspawn".into()], "Установить точку спавна сервера")
+        .execute(SetSpawnCmd);
+    context.register_command(setspawn, PERM_ADMIN);
+
+    let back = Command::new(&["back".into()], "Вернуться на предыдущую локацию или место смерти")
+        .execute(BackCmd);
+    context.register_command(back, PERM_PLAYER);
+
+    let rtp = Command::new(&["rtp".into()], "Безопасная случайная телепортация")
+        .execute(RtpCmd);
+    context.register_command(rtp, PERM_PLAYER);
+
+    let warp = Command::new(&["warp".into(), "w".into()], "Телепортироваться на варп (/warp <название>)")
+        .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(WarpCmd))
+        .execute(WarpCmd);
+    context.register_command(warp, PERM_PLAYER);
+
+    let warps = Command::new(&["warps".into()], "Интерактивный список варпов сервера")
+        .execute(WarpsListCmd);
+    context.register_command(warps, PERM_PLAYER);
+
+    let setwarp = Command::new(&["setwarp".into()], "Создать точку варпа (/setwarp <имя> [описание])")
+        .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(SetWarpCmd))
+        .execute(SetWarpCmd);
+    context.register_command(setwarp, PERM_ADMIN);
+
+    let delwarp = Command::new(&["delwarp".into()], "Удалить точку варпа (/delwarp <имя>)")
+        .then(CommandNode::argument("args", &ArgumentType::String(StringType::Greedy)).execute(DelWarpCmd))
+        .execute(DelWarpCmd);
+    context.register_command(delwarp, PERM_ADMIN);
+
+    let tpa = Command::new(&["tpa".into()], "Запросить телепортацию к игроку (/tpa <ник>)")
+        .then(
+            CommandNode::argument("args", &ArgumentType::String(StringType::Greedy))
+                .execute(TpaCmd { bring_here: false }),
+        )
+        .execute(TpaCmd { bring_here: false });
+    context.register_command(tpa, PERM_PLAYER);
+
+    let tpahere = Command::new(
+        &["tpahere".into()],
+        "Пригласить игрока телепортироваться к себе (/tpahere <ник>)",
+    )
+    .then(
+        CommandNode::argument("args", &ArgumentType::String(StringType::Greedy))
+            .execute(TpaCmd { bring_here: true }),
+    )
+    .execute(TpaCmd { bring_here: true });
+    context.register_command(tpahere, PERM_PLAYER);
+
+    let tpaccept = Command::new(&["tpaccept".into()], "Принять входящий запрос /tpa")
+        .execute(TpAcceptCmd);
+    context.register_command(tpaccept, PERM_PLAYER);
+
+    let tpdeny = Command::new(&["tpdeny".into()], "Отклонить входящий запрос /tpa")
+        .execute(TpDenyCmd);
+    context.register_command(tpdeny, PERM_PLAYER);
 }
