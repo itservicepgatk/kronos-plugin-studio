@@ -2,16 +2,16 @@ import { PluginTemplate } from '../types';
 
 export const KRONOS_ESSENTIALS_TEMPLATE: PluginTemplate = {
   id: 'kronos-essentials',
-  title: 'KRONOS Essentials (Homes, Spawn, GUI & FX)',
+  title: 'KRONOS Essentials v2 (Homes, RTP, Anti-Combat, GUI & FX)',
   description:
-    'Complete Rust WASM teleport suite: /spawn, /sethome, /home, /warps, /back, /tpa, interactive 54-slot GUI menu, rank-scaled home limits (3 → 5 → 7 → 10 → ∞), and spiral particle animations.',
-  tags: ['Essentials', 'Homes & Spawn', 'Chest GUI', 'Particles & FX'],
+    'Full Rust WASM suite: /spawn, /sethome, /home (with sharing & favorites), /rtp meteor drop, /warps, /back (death back for VIP+), /tpa, Anti-Combat PvP lock, Safe Teleport, 5 Chest GUI menus, rank-scaled limits (3 → 5 → 7 → 10 → ∞), rank-locked FX, and atomic autosave.',
+  tags: ['Essentials v2', 'RTP & Homes', 'Anti-Combat', '5 GUI Menus'],
   files: {
     'Cargo.toml': `[package]
 name = "kronos-essentials"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
-description = "KRONOS Essentials: /spawn, /sethome, /home, /warps, /back, /tpa with Chest GUI and cinematic teleport effects for Pumpkin 26.3"
+description = "KRONOS Essentials v2: Homes, Shared Homes, Spawn, Warps, RTP Meteor Drop, TPA, Anti-Combat, Safe Teleport, 5 Chest GUIs, and Cinematic FX for Pumpkin 26.3"
 
 [lib]
 crate-type = ["cdylib"]
@@ -33,9 +33,23 @@ strip = true
   "plugin_name": "kronos-essentials",
   "cancel_on_move_blocks": 0.45,
   "cancel_on_damage": true,
+  "combat_tag_seconds": 15,
+  "safe_teleport_check": true,
+  "post_teleport_invulnerability_ticks": 50,
+  "teleport_new_players_to_spawn": true,
   "tpa_timeout_seconds": 60,
+  "autosave_interval_seconds": 30,
   "blindness_flash_ticks": 16,
   "slow_falling_ticks": 30,
+  "rtp": {
+    "world": "world",
+    "min_radius": 250,
+    "max_radius": 4500,
+    "cooldown_seconds": 120,
+    "drop_height": 22.0,
+    "slow_falling_ticks": 140,
+    "max_attempts": 12
+  },
   "home_icons": [
     "minecraft:red_bed",
     "minecraft:campfire",
@@ -52,11 +66,13 @@ strip = true
       "tier": 0,
       "display_prefix": "§7[ИГРОК] ",
       "max_homes": 3,
+      "max_shared_per_home": 2,
       "warmup_seconds": 3,
       "cooldown_seconds": 15,
       "teleport_theme": "amethyst_spiral",
       "can_set_spawn": false,
       "can_set_warp": false,
+      "can_back_on_death": false,
       "unlimited_homes": false
     },
     {
@@ -64,11 +80,13 @@ strip = true
       "tier": 1,
       "display_prefix": "§e§l[VIP] ",
       "max_homes": 5,
+      "max_shared_per_home": 4,
       "warmup_seconds": 2,
       "cooldown_seconds": 10,
       "teleport_theme": "golden_vortex",
       "can_set_spawn": false,
       "can_set_warp": false,
+      "can_back_on_death": true,
       "unlimited_homes": false
     },
     {
@@ -76,11 +94,13 @@ strip = true
       "tier": 2,
       "display_prefix": "§a§l[PREMIUM] ",
       "max_homes": 7,
+      "max_shared_per_home": 6,
       "warmup_seconds": 2,
       "cooldown_seconds": 6,
       "teleport_theme": "emerald_pulse",
       "can_set_spawn": false,
       "can_set_warp": false,
+      "can_back_on_death": true,
       "unlimited_homes": false
     },
     {
@@ -88,11 +108,13 @@ strip = true
       "tier": 3,
       "display_prefix": "§d§l[LEGEND] ",
       "max_homes": 10,
+      "max_shared_per_home": 10,
       "warmup_seconds": 1,
       "cooldown_seconds": 3,
       "teleport_theme": "dragon_nova",
       "can_set_spawn": false,
       "can_set_warp": true,
+      "can_back_on_death": true,
       "unlimited_homes": false
     },
     {
@@ -100,11 +122,13 @@ strip = true
       "tier": 4,
       "display_prefix": "§c§l[ADMIN] ",
       "max_homes": 25,
+      "max_shared_per_home": 50,
       "warmup_seconds": 0,
       "cooldown_seconds": 0,
       "teleport_theme": "kronos_rift",
       "can_set_spawn": true,
       "can_set_warp": true,
+      "can_back_on_death": true,
       "unlimited_homes": true
     },
     {
@@ -112,11 +136,13 @@ strip = true
       "tier": 5,
       "display_prefix": "§4§l[OWNER] ",
       "max_homes": 50,
+      "max_shared_per_home": 50,
       "warmup_seconds": 0,
       "cooldown_seconds": 0,
       "teleport_theme": "kronos_rift",
       "can_set_spawn": true,
       "can_set_warp": true,
+      "can_back_on_death": true,
       "unlimited_homes": true
     }
   ]
@@ -162,6 +188,10 @@ pub struct HomePoint {
     pub location: Location,
     pub created_at_ms: u64,
     pub uses: u64,
+    #[serde(default)]
+    pub is_favorite: bool,
+    #[serde(default)]
+    pub shared_with: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -174,16 +204,29 @@ pub struct WarpPoint {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RtpConfig {
+    pub world: String,
+    pub min_radius: u32,
+    pub max_radius: u32,
+    pub cooldown_seconds: u64,
+    pub drop_height: f64,
+    pub slow_falling_ticks: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RankProfile {
     pub id: String,
     pub tier: u8,
     pub display_prefix: String,
     pub max_homes: usize,
+    pub max_shared_per_home: usize,
     pub warmup_seconds: u64,
     pub cooldown_seconds: u64,
     pub teleport_theme: String,
     pub can_set_spawn: bool,
     pub can_set_warp: bool,
+    pub can_back_on_death: bool,
     pub unlimited_homes: bool,
 }
 
@@ -192,9 +235,15 @@ pub struct EssentialsConfig {
     pub plugin_name: String,
     pub cancel_on_move_blocks: f64,
     pub cancel_on_damage: bool,
+    pub combat_tag_seconds: u64,
+    pub safe_teleport_check: bool,
+    pub post_teleport_invulnerability_ticks: u32,
+    pub teleport_new_players_to_spawn: bool,
     pub tpa_timeout_seconds: u64,
+    pub autosave_interval_seconds: u64,
     pub blindness_flash_ticks: u32,
     pub slow_falling_ticks: u32,
+    pub rtp: RtpConfig,
     pub home_icons: Vec<String>,
     pub ranks: Vec<RankProfile>,
 }
@@ -214,6 +263,14 @@ impl EssentialsConfig {
             .filter(|r| r.tier > tier)
             .min_by_key(|r| r.tier)
     }
+
+    pub fn rank_name_for_tier(&self, min_tier: u8) -> String {
+        self.ranks
+            .iter()
+            .find(|r| r.tier >= min_tier)
+            .map(|r| r.display_prefix.trim().to_string())
+            .unwrap_or_else(|| "§c[ADMIN]".to_string())
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -224,7 +281,13 @@ pub struct PlayerRecord {
     pub selected_theme: Option<String>,
     pub homes: Vec<HomePoint>,
     pub last_location: Option<Location>,
+    #[serde(default)]
+    pub last_death_location: Option<Location>,
     pub last_teleport_ms: u64,
+    #[serde(default)]
+    pub last_rtp_ms: u64,
+    #[serde(default)]
+    pub first_join_completed: bool,
 }
 
 impl PlayerRecord {
@@ -236,7 +299,10 @@ impl PlayerRecord {
             selected_theme: None,
             homes: Vec::new(),
             last_location: None,
+            last_death_location: None,
             last_teleport_ms: 0,
+            last_rtp_ms: 0,
+            first_join_completed: false,
         }
     }
 
@@ -244,6 +310,10 @@ impl PlayerRecord {
         self.selected_theme
             .as_deref()
             .unwrap_or(rank.teleport_theme.as_str())
+    }
+
+    pub fn favorite_home(&self) -> Option<&HomePoint> {
+        self.homes.iter().find(|h| h.is_favorite)
     }
 }
 
@@ -265,6 +335,21 @@ pub struct PendingTeleport {
     pub duration_ms: u64,
     pub ticks_elapsed: u32,
     pub last_second_announced: u64,
+    pub is_rtp_meteor: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ActiveMeteorFall {
+    pub player_id: String,
+    pub world: String,
+    pub expires_at_ms: u64,
+    pub ticks: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct CombatTag {
+    pub opponent: String,
+    pub expires_at_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -297,8 +382,7 @@ pub struct ChestMenuDescriptor {
     'src/host.rs': `use crate::models::{ChestMenuDescriptor, Location};
 use log::info;
 
-/// Pumpkin 26.3 WASM Host Imports.
-/// Bind these functions in the Pumpkin WASM runtime under the \`pumpkin_host\` namespace.
+/// Pumpkin 26.3 WASM Host Imports (\`pumpkin_host\` namespace).
 #[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "pumpkin_host")]
 extern "C" {
@@ -361,6 +445,19 @@ extern "C" {
         out_ptr: *mut u8,
         out_cap: usize,
     ) -> i32;
+    fn host_is_location_safe(
+        world_ptr: *const u8,
+        world_len: usize,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> i32;
+    fn host_find_safe_surface_y(
+        world_ptr: *const u8,
+        world_len: usize,
+        x: f64,
+        z: f64,
+    ) -> f64;
     fn host_now_ms() -> u64;
 }
 
@@ -540,6 +637,36 @@ pub fn get_player_location(player_id: &str) -> Location {
     }
 }
 
+/// Checks if a destination block has solid ground, 2 blocks of breathing room, and no lava/void.
+pub fn is_location_safe(loc: &Location) -> bool {
+    if loc.y < -60.0 || loc.y > 320.0 {
+        return false;
+    }
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        return host_is_location_safe(loc.world.as_ptr(), loc.world.len(), loc.x, loc.y, loc.z) != 0;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    true
+}
+
+/// Finds a safe solid surface Y coordinate for /rtp (returns None for ocean/lava/void).
+pub fn find_safe_surface_y(world: &str, x: f64, z: f64) -> Option<f64> {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        let y = host_find_safe_surface_y(world.as_ptr(), world.len(), x, z);
+        if y >= -60.0 {
+            return Some(y);
+        }
+        return None;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (world, x, z);
+        Some(72.0)
+    }
+}
+
 pub fn now_ms() -> u64 {
     #[cfg(target_arch = "wasm32")]
     unsafe {
@@ -557,82 +684,110 @@ pub fn now_ms() -> u64 {
 `,
 
     'src/effects.rs': `use crate::host;
-use crate::models::{EssentialsConfig, Location, PendingTeleport};
+use crate::models::{ActiveMeteorFall, EssentialsConfig, Location, PendingTeleport};
 use std::f64::consts::PI;
 
-pub const AVAILABLE_THEMES: &[(&str, &str)] = &[
-    ("amethyst_spiral", "§dАметистовая спираль"),
-    ("golden_vortex", "§6Золотой вихрь"),
-    ("emerald_pulse", "§aИзумрудный импульс"),
-    ("dragon_nova", "§5Драконья сверхновая"),
-    ("kronos_rift", "§bРазлом KRONOS"),
+pub struct ThemeSpec {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub icon: &'static str,
+    pub min_tier: u8,
+    pub description: &'static str,
+    pub primary: &'static str,
+    pub secondary: &'static str,
+    pub accent: &'static str,
+    pub arrival_sound: &'static str,
+    pub title_color: &'static str,
+}
+
+pub const THEME_SPECS: &[ThemeSpec] = &[
+    ThemeSpec {
+        id: "amethyst_spiral",
+        label: "§dАметистовая спираль",
+        icon: "minecraft:amethyst_shard",
+        min_tier: 0,
+        description: "Фиолетовая спираль портала и искры аметиста",
+        primary: "minecraft:portal",
+        secondary: "minecraft:enchant",
+        accent: "minecraft:end_rod",
+        arrival_sound: "minecraft:block.amethyst_block.chime",
+        title_color: "§d",
+    },
+    ThemeSpec {
+        id: "golden_vortex",
+        label: "§6Золотой вихрь",
+        icon: "minecraft:blaze_powder",
+        min_tier: 1,
+        description: "Огненно-золотой вихрь с частицами тотема",
+        primary: "minecraft:flame",
+        secondary: "minecraft:wax_on",
+        accent: "minecraft:totem_of_undying",
+        arrival_sound: "minecraft:item.totem.use",
+        title_color: "§6",
+    },
+    ThemeSpec {
+        id: "emerald_pulse",
+        label: "§aИзумрудный импульс",
+        icon: "minecraft:emerald",
+        min_tier: 2,
+        description: "Яркий изумрудный импульс и световые руны",
+        primary: "minecraft:happy_villager",
+        secondary: "minecraft:glow",
+        accent: "minecraft:end_rod",
+        arrival_sound: "minecraft:entity.player.levelup",
+        title_color: "§a",
+    },
+    ThemeSpec {
+        id: "dragon_nova",
+        label: "§5Драконья сверхновая",
+        icon: "minecraft:dragon_breath",
+        min_tier: 3,
+        description: "Дыхание дракона и обратный портальный шторм",
+        primary: "minecraft:dragon_breath",
+        secondary: "minecraft:reverse_portal",
+        accent: "minecraft:end_rod",
+        arrival_sound: "minecraft:entity.ender_dragon.flap",
+        title_color: "§d",
+    },
+    ThemeSpec {
+        id: "kronos_rift",
+        label: "§bРазлом KRONOS",
+        icon: "minecraft:nether_star",
+        min_tier: 4,
+        description: "Пространственный разлом синего пламени душ",
+        primary: "minecraft:soul_fire_flame",
+        secondary: "minecraft:end_rod",
+        accent: "minecraft:enchant",
+        arrival_sound: "minecraft:block.beacon.power_select",
+        title_color: "§b",
+    },
 ];
 
-struct ThemePalette {
-    primary: &'static str,
-    secondary: &'static str,
-    accent: &'static str,
-    arrival_sound: &'static str,
-    title_color: &'static str,
-}
-
-fn palette_for(theme: &str) -> ThemePalette {
-    match theme {
-        "golden_vortex" => ThemePalette {
-            primary: "minecraft:flame",
-            secondary: "minecraft:wax_on",
-            accent: "minecraft:totem_of_undying",
-            arrival_sound: "minecraft:item.totem.use",
-            title_color: "§6",
-        },
-        "emerald_pulse" => ThemePalette {
-            primary: "minecraft:happy_villager",
-            secondary: "minecraft:glow",
-            accent: "minecraft:end_rod",
-            arrival_sound: "minecraft:entity.player.levelup",
-            title_color: "§a",
-        },
-        "dragon_nova" => ThemePalette {
-            primary: "minecraft:dragon_breath",
-            secondary: "minecraft:reverse_portal",
-            accent: "minecraft:end_rod",
-            arrival_sound: "minecraft:entity.ender_dragon.flap",
-            title_color: "§d",
-        },
-        "kronos_rift" => ThemePalette {
-            primary: "minecraft:soul_fire_flame",
-            secondary: "minecraft:end_rod",
-            accent: "minecraft:enchant",
-            arrival_sound: "minecraft:block.beacon.power_select",
-            title_color: "§b",
-        },
-        _ => ThemePalette {
-            primary: "minecraft:portal",
-            secondary: "minecraft:enchant",
-            accent: "minecraft:end_rod",
-            arrival_sound: "minecraft:block.amethyst_block.chime",
-            title_color: "§d",
-        },
-    }
-}
-
-pub fn theme_display_name(theme: &str) -> &'static str {
-    AVAILABLE_THEMES
+pub fn find_theme(theme_id: &str) -> &'static ThemeSpec {
+    THEME_SPECS
         .iter()
-        .find(|(id, _)| *id == theme)
-        .map(|(_, label)| *label)
-        .unwrap_or("§dАметистовая спираль")
+        .find(|t| t.id.eq_ignore_ascii_case(theme_id))
+        .unwrap_or(&THEME_SPECS[0])
 }
 
-/// Renders one 20-TPS animation frame during teleport warmup:
-/// - Ascending dual-helix particle vortex around the player
-/// - Pulsing rune circle under the player's feet
-/// - Animated ActionBar progress bar & rising harmonic chimes
+pub fn can_use_theme(rank_tier: u8, theme_id: &str) -> bool {
+    rank_tier >= find_theme(theme_id).min_tier
+}
+
+pub fn compute_helix_point(origin: &Location, angle: f64, radius: f64, height: f64) -> (f64, f64, f64) {
+    (
+        origin.x + radius * angle.cos(),
+        origin.y + 0.15 + height,
+        origin.z + radius * angle.sin(),
+    )
+}
+
+/// Renders one 20-TPS animation frame during teleport warmup.
 pub fn render_warmup_frame(pending: &mut PendingTeleport, now_ms: u64) {
     let elapsed = now_ms.saturating_sub(pending.started_at_ms);
     let duration = pending.duration_ms.max(1);
     let progress = (elapsed as f64 / duration as f64).clamp(0.0, 1.0);
-    let palette = palette_for(&pending.theme);
+    let spec = find_theme(&pending.theme);
 
     let t = pending.ticks_elapsed as f64;
     let base_angle = t * 0.36;
@@ -642,11 +797,9 @@ pub fn render_warmup_frame(pending: &mut PendingTeleport, now_ms: u64) {
     // 1. Dual ascending helix arms
     for arm in 0..2 {
         let angle = base_angle + (arm as f64) * PI;
-        let px = pending.origin.x + radius * angle.cos();
-        let py = pending.origin.y + 0.15 + height;
-        let pz = pending.origin.z + radius * angle.sin();
-        host::spawn_particle(&pending.origin.world, palette.primary, px, py, pz, 2, 0.01);
-        host::spawn_particle(&pending.origin.world, palette.secondary, px, py + 0.25, pz, 1, 0.02);
+        let (px, py, pz) = compute_helix_point(&pending.origin, angle, radius, height);
+        host::spawn_particle(&pending.origin.world, spec.primary, px, py, pz, 2, 0.01);
+        host::spawn_particle(&pending.origin.world, spec.secondary, px, py + 0.25, pz, 1, 0.02);
     }
 
     // 2. Ground rune ring every 4 ticks
@@ -659,7 +812,7 @@ pub fn render_warmup_frame(pending: &mut PendingTeleport, now_ms: u64) {
             let rz = pending.origin.z + ring_r * a.sin();
             host::spawn_particle(
                 &pending.origin.world,
-                palette.accent,
+                spec.accent,
                 rx,
                 pending.origin.y + 0.08,
                 rz,
@@ -669,23 +822,19 @@ pub fn render_warmup_frame(pending: &mut PendingTeleport, now_ms: u64) {
         }
     }
 
-    // 3. ActionBar progress meter
+    // 3. ActionBar progress bar
     let filled = ((progress * 10.0).round() as usize).min(10);
-    let bar = format!(
-        "§a{}§8{}",
-        "■".repeat(filled),
-        "□".repeat(10 - filled)
-    );
+    let bar = format!("§a{}§8{}", "■".repeat(filled), "□".repeat(10 - filled));
     let remaining_sec = ((duration.saturating_sub(elapsed) + 999) / 1000).max(1);
     host::send_action_bar(
         &pending.player_id,
         &format!(
             "{}✦ §fТелепорт: §e{} §8[{}] §f{}с §7(не двигайтесь)",
-            palette.title_color, pending.target_label, bar, remaining_sec
+            spec.title_color, pending.target_label, bar, remaining_sec
         ),
     );
 
-    // 4. Harmonic tick sound once per second
+    // 4. Harmonic chime once per second
     if remaining_sec != pending.last_second_announced {
         pending.last_second_announced = remaining_sec;
         let pitch = 0.85 + (progress as f32) * 0.75;
@@ -695,10 +844,7 @@ pub fn render_warmup_frame(pending: &mut PendingTeleport, now_ms: u64) {
     pending.ticks_elapsed = pending.ticks_elapsed.saturating_add(1);
 }
 
-/// Executes the cinematic teleport burst at destination:
-/// - Departure flash at origin
-/// - Teleportation + arrival shockwave ring + vertical beacon column
-/// - Layered spatial audio + brief fade/slow-falling polish + Title banner
+/// Executes standard arrival burst + post-teleport invulnerability shield.
 pub fn play_arrival_burst(
     player_id: &str,
     target_label: &str,
@@ -707,53 +853,46 @@ pub fn play_arrival_burst(
     theme: &str,
     config: &EssentialsConfig,
 ) {
-    let palette = palette_for(theme);
+    let spec = find_theme(theme);
 
-    // Departure burst at old location
-    host::spawn_particle(
-        &origin.world,
-        palette.primary,
-        origin.x,
-        origin.y + 1.0,
-        origin.z,
-        24,
-        0.18,
-    );
-
-    // Perform actual teleport
+    host::spawn_particle(&origin.world, spec.primary, origin.x, origin.y + 1.0, origin.z, 24, 0.18);
     host::teleport_player(player_id, dest);
 
-    // Arrival radial shockwave ring (16 particles)
     let ring_count = 16;
     for i in 0..ring_count {
         let a = (i as f64 / ring_count as f64) * 2.0 * PI;
         let rx = dest.x + 1.15 * a.cos();
         let rz = dest.z + 1.15 * a.sin();
-        host::spawn_particle(&dest.world, palette.primary, rx, dest.y + 0.35, rz, 2, 0.04);
-        host::spawn_particle(&dest.world, palette.accent, rx, dest.y + 1.2, rz, 1, 0.05);
+        host::spawn_particle(&dest.world, spec.primary, rx, dest.y + 0.35, rz, 2, 0.04);
+        host::spawn_particle(&dest.world, spec.accent, rx, dest.y + 1.2, rz, 1, 0.05);
     }
 
-    // Vertical light pillar
     for step in 0..7 {
         let py = dest.y + 0.25 + (step as f64) * 0.4;
-        host::spawn_particle(&dest.world, palette.secondary, dest.x, py, dest.z, 2, 0.02);
+        host::spawn_particle(&dest.world, spec.secondary, dest.x, py, dest.z, 2, 0.02);
     }
 
-    // Layered audio
     host::play_sound(player_id, "minecraft:entity.enderman.teleport", 0.85, 1.05);
-    host::play_sound(player_id, palette.arrival_sound, 0.65, 1.2);
+    host::play_sound(player_id, spec.arrival_sound, 0.65, 1.2);
 
-    // Smooth visual landing polish
     if config.blindness_flash_ticks > 0 {
         host::apply_effect(player_id, "minecraft:blindness", config.blindness_flash_ticks, 0);
     }
     if config.slow_falling_ticks > 0 {
         host::apply_effect(player_id, "minecraft:slow_falling", config.slow_falling_ticks, 0);
     }
+    if config.post_teleport_invulnerability_ticks > 0 {
+        host::apply_effect(
+            player_id,
+            "minecraft:resistance",
+            config.post_teleport_invulnerability_ticks,
+            4,
+        );
+    }
 
     host::send_title(
         player_id,
-        &format!("{}✦ {}", palette.title_color, target_label),
+        &format!("{}✦ {}", spec.title_color, target_label),
         &format!("§7Вы прибыли §8• §f{}", dest.coords_label()),
         5,
         35,
@@ -765,16 +904,64 @@ pub fn play_arrival_burst(
     );
 }
 
-pub fn play_cancel_effect(player_id: &str, origin: &Location, reason: &str) {
-    host::spawn_particle(
-        &origin.world,
-        "minecraft:smoke",
-        origin.x,
-        origin.y + 0.9,
-        origin.z,
-        16,
-        0.08,
+/// Launches the cinematic /rtp meteor drop from the sky with slow falling + fiery trail.
+pub fn play_rtp_meteor_launch(
+    player_id: &str,
+    origin: &Location,
+    surface_dest: &Location,
+    config: &EssentialsConfig,
+    now_ms: u64,
+) -> ActiveMeteorFall {
+    let mut sky_dest = surface_dest.clone();
+    sky_dest.y += config.rtp.drop_height;
+
+    host::spawn_particle(&origin.world, "minecraft:flame", origin.x, origin.y + 1.0, origin.z, 28, 0.2);
+    host::teleport_player(player_id, &sky_dest);
+
+    host::apply_effect(
+        player_id,
+        "minecraft:slow_falling",
+        config.rtp.slow_falling_ticks,
+        0,
     );
+    host::apply_effect(
+        player_id,
+        "minecraft:resistance",
+        config.rtp.slow_falling_ticks,
+        4,
+    );
+    host::play_sound(player_id, "minecraft:entity.firework_rocket.launch", 0.9, 0.9);
+    host::play_sound(player_id, "minecraft:entity.ender_dragon.flap", 0.7, 1.15);
+
+    host::send_title(
+        player_id,
+        "§6☄ Метеоритный десант",
+        &format!("§7Сектор: §f{}", surface_dest.coords_label()),
+        5,
+        45,
+        15,
+    );
+
+    ActiveMeteorFall {
+        player_id: player_id.to_string(),
+        world: sky_dest.world,
+        expires_at_ms: now_ms + (config.rtp.slow_falling_ticks as u64) * 50,
+        ticks: 0,
+    }
+}
+
+pub fn render_meteor_trail_frame(fall: &mut ActiveMeteorFall) {
+    if fall.ticks % 2 == 0 {
+        let loc = host::get_player_location(&fall.player_id);
+        host::spawn_particle(&fall.world, "minecraft:flame", loc.x, loc.y + 0.4, loc.z, 4, 0.06);
+        host::spawn_particle(&fall.world, "minecraft:end_rod", loc.x, loc.y + 0.9, loc.z, 2, 0.04);
+        host::spawn_particle(&fall.world, "minecraft:cloud", loc.x, loc.y + 0.1, loc.z, 2, 0.03);
+    }
+    fall.ticks = fall.ticks.saturating_add(1);
+}
+
+pub fn play_cancel_effect(player_id: &str, origin: &Location, reason: &str) {
+    host::spawn_particle(&origin.world, "minecraft:smoke", origin.x, origin.y + 0.9, origin.z, 16, 0.08);
     host::play_sound(player_id, "minecraft:block.note_block.bass", 0.9, 0.6);
     host::send_title(
         player_id,
@@ -788,30 +975,32 @@ pub fn play_cancel_effect(player_id: &str, origin: &Location, reason: &str) {
 }
 `,
 
-    'src/menu.rs': `use crate::effects::{theme_display_name, AVAILABLE_THEMES};
+    'src/menu.rs': `use crate::effects::{can_use_theme, find_theme, THEME_SPECS};
 use crate::host;
 use crate::models::{
-    ChestMenuDescriptor, EssentialsConfig, EssentialsStore, HomePoint, MenuSlot, PendingTeleport,
+    ChestMenuDescriptor, CombatTag, EssentialsConfig, EssentialsStore, HomePoint, Location,
+    MenuSlot, PendingTeleport, TpaRequest,
 };
 use std::collections::HashMap;
 
-/// 14 interior slots (rows 2 & 3, cols 2..8) reserved for player homes
 pub const HOME_GRID_SLOTS: [u8; 14] = [
     19, 20, 21, 22, 23, 24, 25,
     28, 29, 30, 31, 32, 33, 34,
 ];
 
-const BORDER_SLOTS: [u8; 26] = [
+const BORDER_SLOTS: [u8; 25] = [
     0, 1, 2, 3, 5, 6, 7, 8,
-    9, 17, 18, 26, 27, 35, 36, 44,
-    45, 46, 52, 53,
-    10, 11, 12, 13, 14, 15,
+    9, 10, 11, 12, 13, 14, 15, 16, 17,
+    18, 26, 27, 35, 36, 44,
+    45, 53,
 ];
 
-/// Opens the 54-slot KRONOS Teleport & Homes GUI Menu
+/// 1. Main 54-slot KRONOS Homes & Teleports Hub
 pub fn open_homes_menu(
     store: &EssentialsStore,
     config: &EssentialsConfig,
+    tpa_requests: &HashMap<String, TpaRequest>,
+    combat_tags: &HashMap<String, CombatTag>,
     player_id: &str,
     page: usize,
 ) {
@@ -824,10 +1013,18 @@ pub fn open_homes_menu(
     } else {
         rank.max_homes.to_string()
     };
+    let now = host::now_ms();
+    let in_combat = combat_tags
+        .get(player_id)
+        .map(|c| c.expires_at_ms > now)
+        .unwrap_or(false);
+    let has_tpa = tpa_requests
+        .get(player_id)
+        .map(|r| r.expires_at_ms > now)
+        .unwrap_or(false);
 
     let mut slots: Vec<MenuSlot> = Vec::with_capacity(54);
 
-    // Decorative frame
     for &slot in &BORDER_SLOTS {
         let is_corner = matches!(slot, 0 | 8 | 45 | 53);
         slots.push(MenuSlot {
@@ -842,20 +1039,20 @@ pub fn open_homes_menu(
             enchanted: false,
         });
     }
-    slots.push(MenuSlot {
-        slot: 16,
-        item: "minecraft:black_stained_glass_pane".to_string(),
-        name: "§8".to_string(),
-        lore: vec![],
-        enchanted: false,
-    });
 
     // Top-center Player Status Card (slot 4)
+    let active_theme = find_theme(player.active_theme(&rank));
+    let fav_label = player
+        .favorite_home()
+        .map(|h| format!("§6★ {}", h.name))
+        .unwrap_or_else(|| "§8не выбран".to_string());
     let next_hint = match config.next_rank_after(rank.tier) {
-        Some(next) if !rank.unlimited_homes => {
-            format!("§7Следующий ранг {}: §e{} меток", next.display_prefix.trim(), next.max_homes)
-        }
-        _ => "§aМаксимальный лимит меток разблокирован!".to_string(),
+        Some(next) if !rank.unlimited_homes => format!(
+            "§7Следующий ранг {}: §e{} меток",
+            next.display_prefix.trim(),
+            next.max_homes
+        ),
+        _ => "§aМаксимальный лимит меток открыт!".to_string(),
     };
 
     slots.push(MenuSlot {
@@ -864,35 +1061,47 @@ pub fn open_homes_menu(
         name: format!("{}§f{}", rank.display_prefix, player.username),
         lore: vec![
             format!("§7Точки дома: §e{} §8/ §a{}", player.homes.len(), limit_text),
-            format!("§7Задержка телепорта: §f{}с", rank.warmup_seconds),
-            format!("§7Кулдаун: §f{}с", rank.cooldown_seconds),
-            format!("§7Эффект: {}", theme_display_name(player.active_theme(&rank))),
+            format!("§7Главный дом: {}", fav_label),
+            format!("§7Задержка / Кулдаун: §f{}с §8/ §f{}с", rank.warmup_seconds, rank.cooldown_seconds),
+            format!("§7Эффект: {}", active_theme.label),
+            if in_combat {
+                "§c⚔ Вы в бою! Телепорты временно заблокированы".to_string()
+            } else {
+                "§a✔ Статус: Безопасно".to_string()
+            },
             "§8────────────────────".to_string(),
             next_hint,
         ],
         enchanted: true,
     });
 
-    // Populate the 14-slot home grid
+    // 14 Home Slots
     let per_page = HOME_GRID_SLOTS.len();
     let offset = page * per_page;
 
     for (idx, &slot_num) in HOME_GRID_SLOTS.iter().enumerate() {
         let home_index = offset + idx;
         if let Some(home) = player.homes.get(home_index) {
+            let star = if home.is_favorite { "§6★ " } else { "" };
+            let shared_line = if home.shared_with.is_empty() {
+                "§7Доступ: §8только вы".to_string()
+            } else {
+                format!("§7Друзья ({}): §b{}", home.shared_with.len(), home.shared_with.join(", "))
+            };
             slots.push(MenuSlot {
                 slot: slot_num,
                 item: home.icon.clone(),
-                name: format!("§6✦ §eДом: §f{}", home.name),
+                name: format!("{}§6✦ §eДом: §f{}", star, home.name),
                 lore: vec![
                     format!("§7Координаты: §f{}", home.location.coords_label()),
                     format!("§7Использований: §b{}", home.uses),
+                    shared_line,
                     "§8────────────────────".to_string(),
                     "§a▸ ЛКМ §8— §fТелепортироваться".to_string(),
-                    "§e▸ Shift+ЛКМ §8— §fСменить иконку".to_string(),
-                    "§c▸ ПКМ §8— §fУдалить метку".to_string(),
+                    "§e▸ Shift+ЛКМ §8— §fНастройки дома (★, иконка, перенос)".to_string(),
+                    "§c▸ ПКМ §8— §fУдалить (с подтверждением)".to_string(),
                 ],
-                enchanted: true,
+                enchanted: home.is_favorite,
             });
         } else if rank.unlimited_homes || home_index < rank.max_homes {
             slots.push(MenuSlot {
@@ -920,15 +1129,14 @@ pub fn open_homes_menu(
                 name: "§8🔒 Заблокированный слот".to_string(),
                 lore: vec![
                     format!("§7Доступно с ранга {}", unlock_rank),
-                    "§7Повысьте статус для увеличения".to_string(),
-                    "§7лимита точек дома (3 → 5 → 7 → 10)!".to_string(),
+                    "§7Лимиты статусов: §e3 → 5 → 7 → 10 → ∞".to_string(),
                 ],
                 enchanted: false,
             });
         }
     }
 
-    // Bottom Navigation Bar
+    // Bottom Navigation Bar (Row 6)
     if page > 0 {
         slots.push(MenuSlot {
             slot: 45,
@@ -940,27 +1148,33 @@ pub fn open_homes_menu(
     }
 
     slots.push(MenuSlot {
+        slot: 46,
+        item: "minecraft:firework_rocket".to_string(),
+        name: "§6☄ Случайный телепорт (/rtp)".to_string(),
+        lore: vec![
+            "§7Безопасный поиск суши".to_string(),
+            "§7+ метеоритный спуск с неба!".to_string(),
+            "§a▸ Нажмите для запуска".to_string(),
+        ],
+        enchanted: true,
+    });
+
+    slots.push(MenuSlot {
         slot: 47,
         item: "minecraft:nether_star".to_string(),
         name: "§6✦ Телепорт на Спавн".to_string(),
-        lore: vec![
-            match &store.spawn {
-                Some(loc) => format!("§7Точка: §f{}", loc.coords_label()),
-                None => "§cСпавн ещё не установлен (/setspawn)".to_string(),
-            },
-            "§a▸ Нажмите для перемещения".to_string(),
-        ],
+        lore: vec![match &store.spawn {
+            Some(loc) => format!("§7Точка: §f{}", loc.coords_label()),
+            None => "§cСпавн не установлен (/setspawn)".to_string(),
+        }],
         enchanted: store.spawn.is_some(),
     });
 
     slots.push(MenuSlot {
         slot: 48,
         item: "minecraft:compass".to_string(),
-        name: "§b✦ Серверные Варпы".to_string(),
-        lore: vec![
-            format!("§7Доступно варпов: §e{}", store.warps.len()),
-            "§a▸ Нажмите, чтобы открыть список".to_string(),
-        ],
+        name: "§b✦ Варпы Сервера".to_string(),
+        lore: vec![format!("§7Доступно варпов: §e{}", store.warps.len())],
         enchanted: false,
     });
 
@@ -968,26 +1182,52 @@ pub fn open_homes_menu(
         slot: 49,
         item: "minecraft:ender_pearl".to_string(),
         name: "§d✦ Вернуться назад (/back)".to_string(),
-        lore: vec![match &player.last_location {
-            Some(loc) => format!("§7Прошлая точка: §f{}", loc.coords_label()),
-            None => "§8Нет сохранённой прошлой точки".to_string(),
-        }],
-        enchanted: player.last_location.is_some(),
+        lore: vec![
+            match &player.last_location {
+                Some(loc) => format!("§7Прошлая точка: §f{}", loc.coords_label()),
+                None => "§8Нет прошлой точки".to_string(),
+            },
+            if rank.can_back_on_death {
+                match &player.last_death_location {
+                    Some(d) => format!("§c☠ Точка смерти: §f{}", d.coords_label()),
+                    None => "§7Возврат на точку смерти: §aдоступен".to_string(),
+                }
+            } else {
+                "§8☠ Возврат на точку смерти: с VIP+".to_string()
+            },
+        ],
+        enchanted: player.last_location.is_some() || (rank.can_back_on_death && player.last_death_location.is_some()),
     });
 
     slots.push(MenuSlot {
         slot: 50,
         item: "minecraft:amethyst_shard".to_string(),
-        name: "§d✦ Стиль анимации телепорта".to_string(),
+        name: "§d✦ Меню эффектов телепорта".to_string(),
         lore: vec![
-            format!("§7Текущий: {}", theme_display_name(player.active_theme(&rank))),
-            "§e▸ Нажмите, чтобы переключить эффект".to_string(),
+            format!("§7Активен: {}", active_theme.label),
+            "§e▸ Открыть каталог анимаций".to_string(),
         ],
         enchanted: true,
     });
 
     slots.push(MenuSlot {
         slot: 51,
+        item: "minecraft:bell".to_string(),
+        name: if has_tpa {
+            "§a✦ Входящий TPA-запрос! (1)".to_string()
+        } else {
+            "§7✦ TPA-запросы (0)".to_string()
+        },
+        lore: vec![if has_tpa {
+            "§a▸ Нажмите, чтобы принять или отклонить".to_string()
+        } else {
+            "§8Нет активных входящих запросов".to_string()
+        }],
+        enchanted: has_tpa,
+    });
+
+    slots.push(MenuSlot {
+        slot: 52,
         item: "minecraft:barrier".to_string(),
         name: "§cЗакрыть меню".to_string(),
         lore: vec![],
@@ -1015,7 +1255,251 @@ pub fn open_homes_menu(
     host::play_sound(player_id, "minecraft:ui.button.click", 0.6, 1.2);
 }
 
-/// Opens the Warps GUI Menu
+/// 2. Confirm Delete Modal (27 slots) — prevents accidental right-click deletion
+pub fn open_confirm_delete_menu(store: &EssentialsStore, player_id: &str, home_name: &str) {
+    let Some(home) = store
+        .players
+        .get(player_id)
+        .and_then(|p| p.homes.iter().find(|h| h.name == home_name))
+    else {
+        return;
+    };
+
+    let slots = vec![
+        MenuSlot {
+            slot: 11,
+            item: "minecraft:lime_concrete".to_string(),
+            name: "§a✔ Подтвердить удаление".to_string(),
+            lore: vec![format!("§7Удалить точку дома §e{} §7навсегда", home.name)],
+            enchanted: false,
+        },
+        MenuSlot {
+            slot: 13,
+            item: home.icon.clone(),
+            name: format!("§6✦ Дом: §f{}", home.name),
+            lore: vec![
+                format!("§7Координаты: §f{}", home.location.coords_label()),
+                format!("§7Использований: §b{}", home.uses),
+            ],
+            enchanted: true,
+        },
+        MenuSlot {
+            slot: 15,
+            item: "minecraft:red_concrete".to_string(),
+            name: "§c✖ Отмена".to_string(),
+            lore: vec!["§7Вернуться обратно к списку домов".to_string()],
+            enchanted: false,
+        },
+    ];
+
+    host::open_chest_menu(
+        player_id,
+        &ChestMenuDescriptor {
+            menu_id: format!("kronos_confirm_delete:{}", home.name),
+            title: format!("§cУдалить дом {}?", home.name),
+            rows: 3,
+            slots,
+        },
+    );
+}
+
+/// 3. Home Settings Submenu (27 slots): Favorite ★, Move Here, Cycle Icon, Delete
+pub fn open_home_edit_menu(store: &EssentialsStore, player_id: &str, home_name: &str) {
+    let Some(home) = store
+        .players
+        .get(player_id)
+        .and_then(|p| p.homes.iter().find(|h| h.name == home_name))
+    else {
+        return;
+    };
+
+    let slots = vec![
+        MenuSlot {
+            slot: 10,
+            item: "minecraft:gold_ingot".to_string(),
+            name: if home.is_favorite {
+                "§6★ Главный дом (активен)".to_string()
+            } else {
+                "§e☆ Сделать главным домом".to_string()
+            },
+            lore: vec!["§7Отмечает дом звёздочкой и поднимает статус".to_string()],
+            enchanted: home.is_favorite,
+        },
+        MenuSlot {
+            slot: 12,
+            item: "minecraft:ender_eye".to_string(),
+            name: "§b✦ Переместить точку сюда".to_string(),
+            lore: vec![
+                format!("§7Сейчас: §f{}", home.location.coords_label()),
+                "§a▸ Обновит координаты на вашу текущую позицию".to_string(),
+            ],
+            enchanted: false,
+        },
+        MenuSlot {
+            slot: 14,
+            item: home.icon.clone(),
+            name: "§e✦ Сменить иконку".to_string(),
+            lore: vec![
+                format!("§7Текущая: §f{}", home.icon),
+                "§a▸ Нажмите для переключения".to_string(),
+            ],
+            enchanted: false,
+        },
+        MenuSlot {
+            slot: 16,
+            item: "minecraft:tnt".to_string(),
+            name: "§c✖ Удалить метку".to_string(),
+            lore: vec!["§7Откроет окно подтверждения".to_string()],
+            enchanted: false,
+        },
+        MenuSlot {
+            slot: 22,
+            item: "minecraft:arrow".to_string(),
+            name: "§e◀ Назад к Домам".to_string(),
+            lore: vec![],
+            enchanted: false,
+        },
+    ];
+
+    host::open_chest_menu(
+        player_id,
+        &ChestMenuDescriptor {
+            menu_id: format!("kronos_home_edit:{}", home.name),
+            title: format!("§8Настройки дома: §6{}", home.name),
+            rows: 3,
+            slots,
+        },
+    );
+}
+
+/// 4. Rank-Locked Teleport Effects Catalog (27 slots)
+pub fn open_effects_menu(store: &EssentialsStore, config: &EssentialsConfig, player_id: &str) {
+    let Some(player) = store.players.get(player_id) else {
+        return;
+    };
+    let rank = config.rank_for(&player.rank);
+    let active_id = player.active_theme(&rank);
+    let effect_slots: [u8; 5] = [11, 12, 13, 14, 15];
+
+    let mut slots: Vec<MenuSlot> = Vec::new();
+    for (idx, theme) in THEME_SPECS.iter().enumerate() {
+        let unlocked = rank.tier >= theme.min_tier;
+        let is_selected = theme.id == active_id;
+        slots.push(MenuSlot {
+            slot: effect_slots[idx],
+            item: if unlocked {
+                theme.icon.to_string()
+            } else {
+                "minecraft:gray_dye".to_string()
+            },
+            name: if is_selected {
+                format!("{} §a✔", theme.label)
+            } else {
+                theme.label.to_string()
+            },
+            lore: vec![
+                format!("§7{}", theme.description),
+                "§8────────────────────".to_string(),
+                if is_selected {
+                    "§aВыбрано сейчас".to_string()
+                } else if unlocked {
+                    "§e▸ Нажмите, чтобы активировать".to_string()
+                } else {
+                    format!(
+                        "§c🔒 Требуется статус {}",
+                        config.rank_name_for_tier(theme.min_tier)
+                    )
+                },
+            ],
+            enchanted: is_selected,
+        });
+    }
+
+    slots.push(MenuSlot {
+        slot: 22,
+        item: "minecraft:arrow".to_string(),
+        name: "§e◀ Назад к Домам".to_string(),
+        lore: vec![],
+        enchanted: false,
+    });
+
+    host::open_chest_menu(
+        player_id,
+        &ChestMenuDescriptor {
+            menu_id: "kronos_effects".to_string(),
+            title: "§8✦ §dЭффекты телепортации".to_string(),
+            rows: 3,
+            slots,
+        },
+    );
+}
+
+/// 5. Incoming TPA Manager Menu (27 slots)
+pub fn open_tpa_menu(tpa_requests: &HashMap<String, TpaRequest>, player_id: &str) {
+    let now = host::now_ms();
+    let mut slots: Vec<MenuSlot> = Vec::new();
+
+    if let Some(req) = tpa_requests.get(player_id).filter(|r| r.expires_at_ms > now) {
+        let rem = (req.expires_at_ms - now + 999) / 1000;
+        let kind = if req.summon_here {
+            "приглашает вас к себе"
+        } else {
+            "хочет телепортироваться к вам"
+        };
+        slots.push(MenuSlot {
+            slot: 11,
+            item: "minecraft:lime_concrete".to_string(),
+            name: "§a✔ Принять запрос (/tpaccept)".to_string(),
+            lore: vec![format!("§7Игрок §e{} §7{}", req.from_name, kind)],
+            enchanted: true,
+        });
+        slots.push(MenuSlot {
+            slot: 13,
+            item: "minecraft:player_head".to_string(),
+            name: format!("§6✦ Запрос от §e{}", req.from_name),
+            lore: vec![
+                format!("§7{}", kind),
+                format!("§7Истекает через: §e{}с", rem),
+            ],
+            enchanted: false,
+        });
+        slots.push(MenuSlot {
+            slot: 15,
+            item: "minecraft:red_concrete".to_string(),
+            name: "§c✖ Отклонить (/tpdeny)".to_string(),
+            lore: vec![],
+            enchanted: false,
+        });
+    } else {
+        slots.push(MenuSlot {
+            slot: 13,
+            item: "minecraft:paper".to_string(),
+            name: "§7Нет входящих TPA-запросов".to_string(),
+            lore: vec!["§8Отправить запрос: §f/tpa <игрок>".to_string()],
+            enchanted: false,
+        });
+    }
+
+    slots.push(MenuSlot {
+        slot: 22,
+        item: "minecraft:arrow".to_string(),
+        name: "§e◀ Назад к Домам".to_string(),
+        lore: vec![],
+        enchanted: false,
+    });
+
+    host::open_chest_menu(
+        player_id,
+        &ChestMenuDescriptor {
+            menu_id: "kronos_tpa".to_string(),
+            title: "§8✦ §eВходящие TPA-запросы".to_string(),
+            rows: 3,
+            slots,
+        },
+    );
+}
+
+/// Server Warps Menu (54 slots)
 pub fn open_warps_menu(store: &EssentialsStore, config: &EssentialsConfig, player_id: &str) {
     let Some(player) = store.players.get(player_id) else {
         return;
@@ -1042,7 +1526,7 @@ pub fn open_warps_menu(store: &EssentialsStore, config: &EssentialsConfig, playe
                 if unlocked {
                     "§a▸ Нажмите для телепортации".to_string()
                 } else {
-                    "§c🔒 Требуется более высокий статус".to_string()
+                    format!("§c🔒 Требуется {}", config.rank_name_for_tier(warp.min_tier))
                 },
             ],
             enchanted: unlocked,
@@ -1053,26 +1537,32 @@ pub fn open_warps_menu(store: &EssentialsStore, config: &EssentialsConfig, playe
         slot: 49,
         item: "minecraft:arrow".to_string(),
         name: "§e◀ Назад к Домам".to_string(),
-        lore: vec!["§7Вернуться в главное меню телепортов".to_string()],
+        lore: vec![],
         enchanted: false,
     });
 
-    let menu = ChestMenuDescriptor {
-        menu_id: "kronos_warps".to_string(),
-        title: "§8✦ §bKRONOS Варпы Сервера".to_string(),
-        rows: 6,
-        slots,
-    };
-
-    host::open_chest_menu(player_id, &menu);
+    host::open_chest_menu(
+        player_id,
+        &ChestMenuDescriptor {
+            menu_id: "kronos_warps".to_string(),
+            title: "§8✦ §bKRONOS Варпы Сервера".to_string(),
+            rows: 6,
+            slots,
+        },
+    );
 }
 
-/// Handles clicks inside KRONOS GUI menus.
-/// click_type: "left" | "right" | "shift_left"
+pub struct MenuDispatchContext<'a> {
+    pub store: &'a mut EssentialsStore,
+    pub config: &'a EssentialsConfig,
+    pub pending: &'a mut HashMap<String, PendingTeleport>,
+    pub tpa_requests: &'a mut HashMap<String, TpaRequest>,
+    pub combat_tags: &'a HashMap<String, CombatTag>,
+    pub dirty: &'a mut bool,
+}
+
 pub fn handle_menu_click(
-    store: &mut EssentialsStore,
-    config: &EssentialsConfig,
-    pending: &mut HashMap<String, PendingTeleport>,
+    ctx: &mut MenuDispatchContext<'_>,
     player_id: &str,
     menu_id: &str,
     slot: u8,
@@ -1081,162 +1571,349 @@ pub fn handle_menu_click(
         &mut EssentialsStore,
         &EssentialsConfig,
         &mut HashMap<String, PendingTeleport>,
+        &HashMap<String, CombatTag>,
         &str,
         &str,
-        crate::models::Location,
+        Location,
+        bool,
+        &mut bool,
+    ),
+    trigger_rtp: impl Fn(
+        &mut EssentialsStore,
+        &EssentialsConfig,
+        &mut HashMap<String, PendingTeleport>,
+        &HashMap<String, CombatTag>,
+        &str,
+        &mut bool,
     ),
 ) -> bool {
+    // Confirm Delete Modal
+    if let Some(home_name) = menu_id.strip_prefix("kronos_confirm_delete:") {
+        match slot {
+            11 => {
+                if let Some(player) = ctx.store.players.get_mut(player_id) {
+                    let before = player.homes.len();
+                    player.homes.retain(|h| h.name != home_name);
+                    if player.homes.len() < before {
+                        *ctx.dirty = true;
+                        host::send_chat(player_id, &format!("§c✖ Дом §e{} §cудалён.", home_name));
+                        host::play_sound(player_id, "minecraft:entity.item.break", 0.7, 1.0);
+                    }
+                }
+                open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, 0);
+            }
+            15 => {
+                open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, 0);
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    // Home Settings Submenu
+    if let Some(home_name) = menu_id.strip_prefix("kronos_home_edit:") {
+        match slot {
+            10 => {
+                if let Some(player) = ctx.store.players.get_mut(player_id) {
+                    for h in &mut player.homes {
+                        h.is_favorite = h.name == home_name;
+                    }
+                    *ctx.dirty = true;
+                    host::send_chat(player_id, &format!("§6★ Дом §e{} §6назначен главным!", home_name));
+                    host::play_sound(player_id, "minecraft:entity.player.levelup", 0.65, 1.4);
+                }
+                open_home_edit_menu(ctx.store, player_id, home_name);
+            }
+            12 => {
+                let new_loc = host::get_player_location(player_id);
+                if let Some(player) = ctx.store.players.get_mut(player_id) {
+                    if let Some(h) = player.homes.iter_mut().find(|h| h.name == home_name) {
+                        h.location = new_loc.clone();
+                        *ctx.dirty = true;
+                        host::send_chat(
+                            player_id,
+                            &format!("§a✔ Координаты дома §e{} §aобновлены: §f{}", home_name, new_loc.coords_label()),
+                        );
+                        host::play_sound(player_id, "minecraft:entity.experience_orb.pickup", 0.7, 1.3);
+                    }
+                }
+                open_home_edit_menu(ctx.store, player_id, home_name);
+            }
+            14 => {
+                if let Some(player) = ctx.store.players.get_mut(player_id) {
+                    if let Some(h) = player.homes.iter_mut().find(|h| h.name == home_name) {
+                        if !ctx.config.home_icons.is_empty() {
+                            let pos = ctx
+                                .config
+                                .home_icons
+                                .iter()
+                                .position(|i| i == &h.icon)
+                                .unwrap_or(0);
+                            h.icon = ctx.config.home_icons[(pos + 1) % ctx.config.home_icons.len()].clone();
+                            *ctx.dirty = true;
+                            host::play_sound(player_id, "minecraft:ui.button.click", 0.65, 1.3);
+                        }
+                    }
+                }
+                open_home_edit_menu(ctx.store, player_id, home_name);
+            }
+            16 => {
+                open_confirm_delete_menu(ctx.store, player_id, home_name);
+            }
+            22 => {
+                open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, 0);
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    // Effects Catalog Menu
+    if menu_id == "kronos_effects" {
+        if slot == 22 {
+            open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, 0);
+            return true;
+        }
+        let effect_slots: [u8; 5] = [11, 12, 13, 14, 15];
+        if let Some(idx) = effect_slots.iter().position(|&s| s == slot) {
+            let theme = &THEME_SPECS[idx];
+            if let Some(player) = ctx.store.players.get_mut(player_id) {
+                let rank = ctx.config.rank_for(&player.rank);
+                if !can_use_theme(rank.tier, theme.id) {
+                    host::send_chat(
+                        player_id,
+                        &format!(
+                            "§c🔒 Эффект {} §cдоступен с ранга {}",
+                            theme.label,
+                            ctx.config.rank_name_for_tier(theme.min_tier)
+                        ),
+                    );
+                    host::play_sound(player_id, "minecraft:entity.villager.no", 0.8, 0.9);
+                } else {
+                    player.selected_theme = Some(theme.id.to_string());
+                    *ctx.dirty = true;
+                    host::send_chat(player_id, &format!("§6✦ §fЭффект телепортации: {}", theme.label));
+                    host::play_sound(player_id, theme.arrival_sound, 0.7, 1.2);
+                }
+            }
+            open_effects_menu(ctx.store, ctx.config, player_id);
+        }
+        return true;
+    }
+
+    // Incoming TPA Menu
+    if menu_id == "kronos_tpa" {
+        match slot {
+            11 => {
+                let now = host::now_ms();
+                if let Some(req) = ctx.tpa_requests.remove(player_id) {
+                    if now <= req.expires_at_ms {
+                        host::close_menu(player_id);
+                        if req.summon_here {
+                            let dest = host::get_player_location(&req.from_id);
+                            schedule_tp(
+                                ctx.store,
+                                ctx.config,
+                                ctx.pending,
+                                ctx.combat_tags,
+                                &req.to_id,
+                                &format!("Игрок {}", req.from_name),
+                                dest,
+                                false,
+                                ctx.dirty,
+                            );
+                        } else {
+                            let dest = host::get_player_location(&req.to_id);
+                            schedule_tp(
+                                ctx.store,
+                                ctx.config,
+                                ctx.pending,
+                                ctx.combat_tags,
+                                &req.from_id,
+                                &format!("Игрок {}", req.to_id),
+                                dest,
+                                false,
+                                ctx.dirty,
+                            );
+                        }
+                        host::send_chat(player_id, "§a✔ TPA-запрос принят!");
+                    }
+                }
+            }
+            15 => {
+                if let Some(req) = ctx.tpa_requests.remove(player_id) {
+                    host::send_chat(player_id, "§c✖ Запрос отклонён.");
+                    host::send_chat(&req.from_id, &format!("§c✖ {} отклонил ваш TPA-запрос.", player_id));
+                }
+                open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, 0);
+            }
+            22 => {
+                open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, 0);
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    // Warps Menu
     if menu_id == "kronos_warps" {
         if slot == 49 {
-            open_homes_menu(store, config, player_id, 0);
+            open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, 0);
             return true;
         }
         if let Some(grid_idx) = HOME_GRID_SLOTS.iter().position(|&s| s == slot) {
-            let mut sorted_warps: Vec<_> = store.warps.values().cloned().collect();
+            let mut sorted_warps: Vec<_> = ctx.store.warps.values().cloned().collect();
             sorted_warps.sort_by(|a, b| a.name.cmp(&b.name));
             if let Some(warp) = sorted_warps.get(grid_idx) {
-                let rank = store
+                let rank = ctx
+                    .store
                     .players
                     .get(player_id)
-                    .map(|p| config.rank_for(&p.rank))
-                    .unwrap_or_else(|| config.ranks[0].clone());
+                    .map(|p| ctx.config.rank_for(&p.rank))
+                    .unwrap_or_else(|| ctx.config.ranks[0].clone());
                 if rank.tier < warp.min_tier {
-                    host::send_chat(player_id, "§c✖ Этот варп доступен с более высокого статуса.");
+                    host::send_chat(player_id, "§c🔒 Недостаточный статус для этого варпа.");
                     host::play_sound(player_id, "minecraft:entity.villager.no", 0.8, 1.0);
                     return true;
                 }
                 host::close_menu(player_id);
                 schedule_tp(
-                    store,
-                    config,
-                    pending,
+                    ctx.store,
+                    ctx.config,
+                    ctx.pending,
+                    ctx.combat_tags,
                     player_id,
                     &format!("Варп {}", warp.name),
                     warp.location.clone(),
+                    false,
+                    ctx.dirty,
                 );
             }
         }
         return true;
     }
 
+    // Main Homes Hub
     if let Some(page_str) = menu_id.strip_prefix("kronos_homes:") {
         let page: usize = page_str.parse().unwrap_or(0);
-
         match slot {
             45 if page > 0 => {
-                open_homes_menu(store, config, player_id, page - 1);
+                open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, page - 1);
                 return true;
             }
             53 => {
-                open_homes_menu(store, config, player_id, page + 1);
+                open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, page + 1);
+                return true;
+            }
+            46 => {
+                host::close_menu(player_id);
+                trigger_rtp(ctx.store, ctx.config, ctx.pending, ctx.combat_tags, player_id, ctx.dirty);
                 return true;
             }
             47 => {
                 host::close_menu(player_id);
-                if let Some(spawn) = store.spawn.clone() {
-                    schedule_tp(store, config, pending, player_id, "Спавн", spawn);
+                if let Some(spawn) = ctx.store.spawn.clone() {
+                    schedule_tp(
+                        ctx.store,
+                        ctx.config,
+                        ctx.pending,
+                        ctx.combat_tags,
+                        player_id,
+                        "Спавн",
+                        spawn,
+                        false,
+                        ctx.dirty,
+                    );
                 } else {
-                    host::send_chat(player_id, "§c✖ Точка спавна пока не задана (/setspawn).");
+                    host::send_chat(player_id, "§c✖ Спавн ещё не задан (/setspawn).");
                 }
                 return true;
             }
             48 => {
-                open_warps_menu(store, config, player_id);
+                open_warps_menu(ctx.store, ctx.config, player_id);
                 return true;
             }
             49 => {
                 host::close_menu(player_id);
-                let back_loc = store
-                    .players
-                    .get(player_id)
-                    .and_then(|p| p.last_location.clone());
-                if let Some(loc) = back_loc {
-                    schedule_tp(store, config, pending, player_id, "Прошлая точка", loc);
+                let target = ctx.store.players.get(player_id).and_then(|p| {
+                    let rank = ctx.config.rank_for(&p.rank);
+                    if rank.can_back_on_death {
+                        p.last_death_location.clone().or_else(|| p.last_location.clone())
+                    } else {
+                        p.last_location.clone()
+                    }
+                });
+                if let Some(loc) = target {
+                    schedule_tp(
+                        ctx.store,
+                        ctx.config,
+                        ctx.pending,
+                        ctx.combat_tags,
+                        player_id,
+                        "Прошлая точка",
+                        loc,
+                        false,
+                        ctx.dirty,
+                    );
                 } else {
-                    host::send_chat(player_id, "§c✖ У вас ещё нет сохранённой точки для /back.");
+                    host::send_chat(player_id, "§c✖ Нет сохранённой точки для /back.");
                 }
                 return true;
             }
             50 => {
-                if let Some(player) = store.players.get_mut(player_id) {
-                    let rank = config.rank_for(&player.rank);
-                    let current = player.active_theme(&rank).to_string();
-                    let cur_idx = AVAILABLE_THEMES
-                        .iter()
-                        .position(|(id, _)| *id == current)
-                        .unwrap_or(0);
-                    let next_idx = (cur_idx + 1) % AVAILABLE_THEMES.len();
-                    let (next_id, next_label) = AVAILABLE_THEMES[next_idx];
-                    player.selected_theme = Some(next_id.to_string());
-                    host::send_chat(
-                        player_id,
-                        &format!("§6✦ §fЭффект телепортации изменён на: {}", next_label),
-                    );
-                }
-                open_homes_menu(store, config, player_id, page);
+                open_effects_menu(ctx.store, ctx.config, player_id);
                 return true;
             }
             51 => {
+                open_tpa_menu(ctx.tpa_requests, player_id);
+                return true;
+            }
+            52 => {
                 host::close_menu(player_id);
                 return true;
             }
             _ => {}
         }
 
-        // Click on one of the 14 home slots
         if let Some(grid_idx) = HOME_GRID_SLOTS.iter().position(|&s| s == slot) {
             let home_idx = page * HOME_GRID_SLOTS.len() + grid_idx;
-            let Some(player) = store.players.get_mut(player_id) else {
+            let Some(player) = ctx.store.players.get_mut(player_id) else {
                 return true;
             };
-            let rank = config.rank_for(&player.rank);
+            let rank = ctx.config.rank_for(&player.rank);
 
             if home_idx < player.homes.len() {
+                let home_name = player.homes[home_idx].name.clone();
                 match click_type {
                     "right" => {
-                        let removed = player.homes.remove(home_idx);
-                        host::send_chat(
-                            player_id,
-                            &format!("§c✖ Метка дома §e{} §cудалена.", removed.name),
-                        );
-                        host::play_sound(player_id, "minecraft:entity.item.break", 0.7, 1.0);
-                        open_homes_menu(store, config, player_id, page);
+                        open_confirm_delete_menu(ctx.store, player_id, &home_name);
                     }
                     "shift_left" => {
-                        if !config.home_icons.is_empty() {
-                            let cur_icon = &player.homes[home_idx].icon;
-                            let pos = config
-                                .home_icons
-                                .iter()
-                                .position(|i| i == cur_icon)
-                                .unwrap_or(0);
-                            let next_icon =
-                                config.home_icons[(pos + 1) % config.home_icons.len()].clone();
-                            player.homes[home_idx].icon = next_icon;
-                            host::play_sound(player_id, "minecraft:entity.experience_orb.pickup", 0.6, 1.4);
-                        }
-                        open_homes_menu(store, config, player_id, page);
+                        open_home_edit_menu(ctx.store, player_id, &home_name);
                     }
                     _ => {
                         player.homes[home_idx].uses += 1;
-                        let home_name = player.homes[home_idx].name.clone();
                         let dest = player.homes[home_idx].location.clone();
+                        *ctx.dirty = true;
                         host::close_menu(player_id);
                         schedule_tp(
-                            store,
-                            config,
-                            pending,
+                            ctx.store,
+                            ctx.config,
+                            ctx.pending,
+                            ctx.combat_tags,
                             player_id,
                             &format!("Дом {}", home_name),
                             dest,
+                            false,
+                            ctx.dirty,
                         );
                     }
                 }
             } else if rank.unlimited_homes || home_idx < rank.max_homes {
-                // Quick-create home in empty unlocked slot
                 let auto_name = format!("home{}", player.homes.len() + 1);
                 let loc = host::get_player_location(player_id);
-                let icon = config
+                let icon = ctx
+                    .config
                     .home_icons
                     .first()
                     .cloned()
@@ -1247,17 +1924,17 @@ pub fn handle_menu_click(
                     location: loc,
                     created_at_ms: host::now_ms(),
                     uses: 0,
+                    is_favorite: player.homes.is_empty(),
+                    shared_with: Vec::new(),
                 });
-                host::send_chat(
-                    player_id,
-                    &format!("§a✔ Быстро создана метка дома §e{}§a!", auto_name),
-                );
+                *ctx.dirty = true;
+                host::send_chat(player_id, &format!("§a✔ Быстро создана метка §e{}§a!", auto_name));
                 host::play_sound(player_id, "minecraft:entity.player.levelup", 0.65, 1.4);
-                open_homes_menu(store, config, player_id, page);
+                open_homes_menu(ctx.store, ctx.config, ctx.tpa_requests, ctx.combat_tags, player_id, page);
             } else {
                 host::send_chat(
                     player_id,
-                    "§c🔒 Этот слот заблокирован. Повысьте статус, чтобы увеличить лимит домов!",
+                    "§c🔒 Слот заблокирован. Повысьте статус для расширения лимита домов!",
                 );
                 host::play_sound(player_id, "minecraft:entity.villager.no", 0.8, 0.9);
             }
@@ -1270,7 +1947,7 @@ pub fn handle_menu_click(
 }
 `,
 
-    'src/storage.rs': `use crate::models::{EssentialsConfig, EssentialsStore, RankProfile};
+    'src/storage.rs': `use crate::models::{EssentialsConfig, EssentialsStore, RankProfile, RtpConfig};
 use log::{info, warn};
 use std::fs;
 use std::path::Path;
@@ -1278,15 +1955,30 @@ use std::path::Path;
 const DATA_DIR: &str = "data/kronos-essentials";
 const CONFIG_PATH: &str = "data/kronos-essentials/config.json";
 const STORE_PATH: &str = "data/kronos-essentials/store.json";
+const STORE_TMP_PATH: &str = "data/kronos-essentials/store.json.tmp";
 
 pub fn default_config() -> EssentialsConfig {
     EssentialsConfig {
         plugin_name: "kronos-essentials".to_string(),
         cancel_on_move_blocks: 0.45,
         cancel_on_damage: true,
+        combat_tag_seconds: 15,
+        safe_teleport_check: true,
+        post_teleport_invulnerability_ticks: 50,
+        teleport_new_players_to_spawn: true,
         tpa_timeout_seconds: 60,
+        autosave_interval_seconds: 30,
         blindness_flash_ticks: 16,
         slow_falling_ticks: 30,
+        rtp: RtpConfig {
+            world: "world".to_string(),
+            min_radius: 250,
+            max_radius: 4500,
+            cooldown_seconds: 120,
+            drop_height: 22.0,
+            slow_falling_ticks: 140,
+            max_attempts: 12,
+        },
         home_icons: vec![
             "minecraft:red_bed".to_string(),
             "minecraft:campfire".to_string(),
@@ -1303,11 +1995,13 @@ pub fn default_config() -> EssentialsConfig {
                 tier: 0,
                 display_prefix: "§7[ИГРОК] ".to_string(),
                 max_homes: 3,
+                max_shared_per_home: 2,
                 warmup_seconds: 3,
                 cooldown_seconds: 15,
                 teleport_theme: "amethyst_spiral".to_string(),
                 can_set_spawn: false,
                 can_set_warp: false,
+                can_back_on_death: false,
                 unlimited_homes: false,
             },
             RankProfile {
@@ -1315,11 +2009,13 @@ pub fn default_config() -> EssentialsConfig {
                 tier: 1,
                 display_prefix: "§e§l[VIP] ".to_string(),
                 max_homes: 5,
+                max_shared_per_home: 4,
                 warmup_seconds: 2,
                 cooldown_seconds: 10,
                 teleport_theme: "golden_vortex".to_string(),
                 can_set_spawn: false,
                 can_set_warp: false,
+                can_back_on_death: true,
                 unlimited_homes: false,
             },
             RankProfile {
@@ -1327,11 +2023,13 @@ pub fn default_config() -> EssentialsConfig {
                 tier: 2,
                 display_prefix: "§a§l[PREMIUM] ".to_string(),
                 max_homes: 7,
+                max_shared_per_home: 6,
                 warmup_seconds: 2,
                 cooldown_seconds: 6,
                 teleport_theme: "emerald_pulse".to_string(),
                 can_set_spawn: false,
                 can_set_warp: false,
+                can_back_on_death: true,
                 unlimited_homes: false,
             },
             RankProfile {
@@ -1339,11 +2037,13 @@ pub fn default_config() -> EssentialsConfig {
                 tier: 3,
                 display_prefix: "§d§l[LEGEND] ".to_string(),
                 max_homes: 10,
+                max_shared_per_home: 10,
                 warmup_seconds: 1,
                 cooldown_seconds: 3,
                 teleport_theme: "dragon_nova".to_string(),
                 can_set_spawn: false,
                 can_set_warp: true,
+                can_back_on_death: true,
                 unlimited_homes: false,
             },
             RankProfile {
@@ -1351,11 +2051,13 @@ pub fn default_config() -> EssentialsConfig {
                 tier: 4,
                 display_prefix: "§c§l[ADMIN] ".to_string(),
                 max_homes: 25,
+                max_shared_per_home: 50,
                 warmup_seconds: 0,
                 cooldown_seconds: 0,
                 teleport_theme: "kronos_rift".to_string(),
                 can_set_spawn: true,
                 can_set_warp: true,
+                can_back_on_death: true,
                 unlimited_homes: true,
             },
             RankProfile {
@@ -1363,11 +2065,13 @@ pub fn default_config() -> EssentialsConfig {
                 tier: 5,
                 display_prefix: "§4§l[OWNER] ".to_string(),
                 max_homes: 50,
+                max_shared_per_home: 50,
                 warmup_seconds: 0,
                 cooldown_seconds: 0,
                 teleport_theme: "kronos_rift".to_string(),
                 can_set_spawn: true,
                 can_set_warp: true,
+                can_back_on_death: true,
                 unlimited_homes: true,
             },
         ],
@@ -1381,10 +2085,10 @@ pub fn load_config() -> EssentialsConfig {
             .and_then(|raw| serde_json::from_str::<EssentialsConfig>(&raw).ok())
         {
             Some(cfg) => {
-                info!("Loaded KRONOS Essentials config from {}", CONFIG_PATH);
+                info!("Loaded KRONOS Essentials v2 config from {}", CONFIG_PATH);
                 return cfg;
             }
-            None => warn!("Invalid config.json, falling back to built-in defaults"),
+            None => warn!("Invalid config.json, using built-in defaults"),
         }
     }
 
@@ -1408,45 +2112,105 @@ pub fn load_store() -> EssentialsStore {
     EssentialsStore::default()
 }
 
-pub fn save_store(store: &EssentialsStore) {
+/// Atomic crash-safe write: writes to store.json.tmp first, then atomically renames to store.json.
+pub fn save_store_atomic(store: &EssentialsStore) {
     let _ = fs::create_dir_all(DATA_DIR);
     if let Ok(pretty) = serde_json::to_string_pretty(store) {
-        if let Err(err) = fs::write(STORE_PATH, pretty) {
-            warn!("Failed to persist {}: {}", STORE_PATH, err);
+        if let Err(err) = fs::write(STORE_TMP_PATH, pretty) {
+            warn!("Failed writing temporary store file: {}", err);
+            return;
+        }
+        if let Err(err) = fs::rename(STORE_TMP_PATH, STORE_PATH) {
+            warn!("Failed atomic rename {} -> {}: {}", STORE_TMP_PATH, STORE_PATH, err);
         }
     }
 }
 `,
 
-    'src/commands.rs': `use crate::effects::{self, AVAILABLE_THEMES};
+    'src/commands.rs': `use crate::effects::{self, can_use_theme, find_theme};
 use crate::host;
 use crate::menu;
 use crate::models::{
-    EssentialsConfig, EssentialsStore, HomePoint, Location, PendingTeleport, PlayerRecord,
-    TpaRequest, WarpPoint,
+    CombatTag, EssentialsConfig, EssentialsStore, HomePoint, Location, PendingTeleport,
+    PlayerRecord, TpaRequest, WarpPoint,
 };
-use crate::storage;
 use std::collections::HashMap;
+
+/// Lightweight deterministic xorshift64 PRNG for /rtp coordinates without extra crates.
+pub fn next_u64(state: &mut u64) -> u64 {
+    let mut x = *state;
+    if x == 0 {
+        x = 0x9e37_79b9_7f4a_7c15;
+    }
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+pub fn sample_rtp_xz(seed: &mut u64, min_r: u32, max_r: u32) -> (f64, f64) {
+    let span = (max_r.saturating_sub(min_r)).max(1) as u64;
+    let r = (min_r as u64 + (next_u64(seed) % span)) as f64;
+    let angle = ((next_u64(seed) % 36_000) as f64 / 36_000.0) * std::f64::consts::TAU;
+    ((r * angle.cos()).floor() + 0.5, (r * angle.sin()).floor() + 0.5)
+}
+
+pub fn remaining_combat_seconds(combat_tags: &HashMap<String, CombatTag>, player_id: &str, now: u64) -> u64 {
+    combat_tags
+        .get(player_id)
+        .filter(|tag| tag.expires_at_ms > now)
+        .map(|tag| (tag.expires_at_ms - now + 999) / 1000)
+        .unwrap_or(0)
+}
 
 pub fn schedule_teleport(
     store: &mut EssentialsStore,
     config: &EssentialsConfig,
     pending: &mut HashMap<String, PendingTeleport>,
+    combat_tags: &HashMap<String, CombatTag>,
     player_id: &str,
     target_label: &str,
     destination: Location,
+    is_rtp_meteor: bool,
+    dirty: &mut bool,
 ) {
     let now = host::now_ms();
+
+    // 1. Anti-Combat check
+    let combat_left = remaining_combat_seconds(combat_tags, player_id, now);
+    if combat_left > 0 {
+        host::send_chat(
+            player_id,
+            &format!("§c⚔ Вы в бою! Телепортация недоступна ещё §e{}с§c.", combat_left),
+        );
+        host::play_sound(player_id, "minecraft:entity.villager.no", 0.85, 0.8);
+        return;
+    }
+
+    // 2. Safe Teleport check (skip for RTP which already validated surface_y)
+    if !is_rtp_meteor && config.safe_teleport_check && !host::is_location_safe(&destination) {
+        host::send_chat(
+            player_id,
+            &format!(
+                "§c⚠ Точка §e{} §cнебезопасна (лава, блоки или пустота). Телепортация отменена!",
+                target_label
+            ),
+        );
+        host::play_sound(player_id, "minecraft:block.note_block.bass", 0.9, 0.6);
+        return;
+    }
+
     let player = store
         .players
         .entry(player_id.to_string())
         .or_insert_with(|| PlayerRecord::new(player_id, player_id));
     let rank = config.rank_for(&player.rank);
 
-    // Cooldown check
+    // 3. Cooldown check
     let cooldown_ms = rank.cooldown_seconds * 1000;
     let since_last = now.saturating_sub(player.last_teleport_ms);
-    if cooldown_ms > 0 && player.last_teleport_ms > 0 && since_last < cooldown_ms {
+    if !is_rtp_meteor && cooldown_ms > 0 && player.last_teleport_ms > 0 && since_last < cooldown_ms {
         let wait_sec = ((cooldown_ms - since_last) + 999) / 1000;
         host::send_chat(
             player_id,
@@ -1459,20 +2223,26 @@ pub fn schedule_teleport(
     let origin = host::get_player_location(player_id);
     let theme = player.active_theme(&rank).to_string();
 
-    // Instant teleport for high ranks with warmup_seconds == 0
-    if rank.warmup_seconds == 0 {
+    // Instant teleport for high ranks (non-RTP)
+    if rank.warmup_seconds == 0 && !is_rtp_meteor {
         player.last_location = Some(origin.clone());
         player.last_teleport_ms = now;
+        *dirty = true;
         effects::play_arrival_burst(player_id, target_label, &origin, &destination, &theme, config);
-        storage::save_store(store);
         return;
     }
+
+    let warmup_secs = if is_rtp_meteor {
+        rank.warmup_seconds.max(1)
+    } else {
+        rank.warmup_seconds
+    };
 
     host::send_chat(
         player_id,
         &format!(
-            "§6✦ §fЗапуск телепортации к §e{}§f ({}с). Не двигайтесь!",
-            target_label, rank.warmup_seconds
+            "§6✦ §fЗапуск телепортации: §e{}§f ({}с). Не двигайтесь!",
+            target_label, warmup_secs
         ),
     );
     host::play_sound(player_id, "minecraft:block.portal.trigger", 0.55, 1.25);
@@ -1486,10 +2256,81 @@ pub fn schedule_teleport(
             origin,
             theme,
             started_at_ms: now,
-            duration_ms: rank.warmup_seconds * 1000,
+            duration_ms: warmup_secs * 1000,
             ticks_elapsed: 0,
             last_second_announced: u64::MAX,
+            is_rtp_meteor,
         },
+    );
+}
+
+pub fn trigger_rtp(
+    store: &mut EssentialsStore,
+    config: &EssentialsConfig,
+    pending: &mut HashMap<String, PendingTeleport>,
+    combat_tags: &HashMap<String, CombatTag>,
+    player_id: &str,
+    dirty: &mut bool,
+) {
+    let now = host::now_ms();
+    let combat_left = remaining_combat_seconds(combat_tags, player_id, now);
+    if combat_left > 0 {
+        host::send_chat(player_id, &format!("§c⚔ Нельзя использовать /rtp в бою ({}с).", combat_left));
+        return;
+    }
+
+    let player = store
+        .players
+        .entry(player_id.to_string())
+        .or_insert_with(|| PlayerRecord::new(player_id, player_id));
+    let rank = config.rank_for(&player.rank);
+    let rtp_cd_ms = if rank.warmup_seconds == 0 {
+        0
+    } else {
+        config.rtp.cooldown_seconds * 1000
+    };
+    let since_rtp = now.saturating_sub(player.last_rtp_ms);
+    if rtp_cd_ms > 0 && player.last_rtp_ms > 0 && since_rtp < rtp_cd_ms {
+        let wait = ((rtp_cd_ms - since_rtp) + 999) / 1000;
+        host::send_chat(player_id, &format!("§c⏳ Кулдаун /rtp: подождите §e{}с§c.", wait));
+        return;
+    }
+
+    let mut seed = now ^ player_id.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let mut found: Option<Location> = None;
+
+    for _ in 0..config.rtp.max_attempts {
+        let (x, z) = sample_rtp_xz(&mut seed, config.rtp.min_radius, config.rtp.max_radius);
+        if let Some(surface_y) = host::find_safe_surface_y(&config.rtp.world, x, z) {
+            found = Some(Location {
+                world: config.rtp.world.clone(),
+                x,
+                y: surface_y,
+                z,
+                yaw: 0.0,
+                pitch: 0.0,
+            });
+            break;
+        }
+    }
+
+    let Some(dest) = found else {
+        host::send_chat(player_id, "§c✖ Не удалось найти безопасную сушу. Попробуйте ещё раз!");
+        return;
+    };
+
+    player.last_rtp_ms = now;
+    *dirty = true;
+    schedule_teleport(
+        store,
+        config,
+        pending,
+        combat_tags,
+        player_id,
+        "Случайная точка (RTP)",
+        dest,
+        true,
+        dirty,
     );
 }
 
@@ -1498,6 +2339,8 @@ pub fn handle_command(
     config: &EssentialsConfig,
     pending: &mut HashMap<String, PendingTeleport>,
     tpa_requests: &mut HashMap<String, TpaRequest>,
+    combat_tags: &HashMap<String, CombatTag>,
+    dirty: &mut bool,
     player_id: &str,
     command: &str,
 ) -> bool {
@@ -1506,7 +2349,6 @@ pub fn handle_command(
         return false;
     }
 
-    // Ensure player record exists
     store
         .players
         .entry(player_id.to_string())
@@ -1516,7 +2358,7 @@ pub fn handle_command(
     match cmd.as_str() {
         "/spawn" => {
             if let Some(spawn) = store.spawn.clone() {
-                schedule_teleport(store, config, pending, player_id, "Спавн", spawn);
+                schedule_teleport(store, config, pending, combat_tags, player_id, "Спавн", spawn, false, dirty);
             } else {
                 host::send_chat(player_id, "§c✖ Точка спавна не установлена. Админ: /setspawn");
             }
@@ -1531,30 +2373,28 @@ pub fn handle_command(
             }
             let loc = host::get_player_location(player_id);
             store.spawn = Some(loc.clone());
-            storage::save_store(store);
-            host::send_chat(
-                player_id,
-                &format!("§a✔ Точка спавна установлена: §f{}", loc.coords_label()),
-            );
+            *dirty = true;
+            host::send_chat(player_id, &format!("§a✔ Спавн установлен: §f{}", loc.coords_label()));
             host::play_sound(player_id, "minecraft:ui.toast.challenge_complete", 0.8, 1.1);
+            true
+        }
+
+        "/rtp" => {
+            trigger_rtp(store, config, pending, combat_tags, player_id, dirty);
             true
         }
 
         "/sethome" => {
             let name = parts.get(1).copied().unwrap_or("home").to_lowercase();
             if name.len() > 20 || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                host::send_chat(player_id, "§c✖ Название дома: до 20 символов (буквы, цифры, _ и -).");
+                host::send_chat(player_id, "§c✖ Название: до 20 символов (буквы, цифры, _ и -).");
                 return true;
             }
 
             let rank = config.rank_for(&store.players[player_id].rank);
             let loc = host::get_player_location(player_id);
             let requested_icon = parts.get(2).copied().map(|s| {
-                if s.contains(':') {
-                    s.to_string()
-                } else {
-                    format!("minecraft:{}", s)
-                }
+                if s.contains(':') { s.to_string() } else { format!("minecraft:{}", s) }
             });
 
             let player = store.players.get_mut(player_id).unwrap();
@@ -1571,16 +2411,11 @@ pub fn handle_command(
                 if !rank.unlimited_homes && player.homes.len() >= rank.max_homes {
                     let next_info = config
                         .next_rank_after(rank.tier)
-                        .map(|n| format!(" (следующий ранг {} даёт {} меток!)", n.display_prefix.trim(), n.max_homes))
+                        .map(|n| format!(" (ранг {} даёт {} меток!)", n.display_prefix.trim(), n.max_homes))
                         .unwrap_or_default();
                     host::send_chat(
                         player_id,
-                        &format!(
-                            "§c✖ Лимит домов исчерпан: §e{}/{}§c{}",
-                            player.homes.len(),
-                            rank.max_homes,
-                            next_info
-                        ),
+                        &format!("§c✖ Лимит домов исчерпан: §e{}/{}§c{}", player.homes.len(), rank.max_homes, next_info),
                     );
                     host::play_sound(player_id, "minecraft:entity.villager.no", 0.8, 1.0);
                     return true;
@@ -1594,42 +2429,149 @@ pub fn handle_command(
                         .unwrap_or_else(|| "minecraft:red_bed".to_string())
                 });
 
+                let is_first = player.homes.is_empty();
                 player.homes.push(HomePoint {
                     name: name.clone(),
                     icon,
                     location: loc.clone(),
                     created_at_ms: host::now_ms(),
                     uses: 0,
+                    is_favorite: is_first,
+                    shared_with: Vec::new(),
                 });
 
-                let limit_str = if rank.unlimited_homes {
-                    "∞".to_string()
-                } else {
-                    rank.max_homes.to_string()
-                };
+                let limit_str = if rank.unlimited_homes { "∞".to_string() } else { rank.max_homes.to_string() };
                 host::send_chat(
                     player_id,
-                    &format!(
-                        "§a✔ Дом §e{} §aсохранён! §8[§e{}/{}§8] §7• §f{}",
-                        name,
-                        player.homes.len(),
-                        limit_str,
-                        loc.coords_label()
-                    ),
+                    &format!("§a✔ Дом §e{} §aсохранён! §8[§e{}/{}§8] §7• §f{}", name, player.homes.len(), limit_str, loc.coords_label()),
                 );
             }
 
             host::spawn_particle(&loc.world, "minecraft:happy_villager", loc.x, loc.y + 1.0, loc.z, 14, 0.25);
             host::play_sound(player_id, "minecraft:entity.player.levelup", 0.7, 1.35);
-            storage::save_store(store);
+            *dirty = true;
             true
         }
 
         "/home" => {
             if parts.len() == 1 {
-                menu::open_homes_menu(store, config, player_id, 0);
+                menu::open_homes_menu(store, config, tpa_requests, combat_tags, player_id, 0);
                 return true;
             }
+
+            // Subcommands: /home share <дом> <игрок>, /home unshare <дом> <игрок>, /home fav <дом>
+            match parts[1].to_lowercase().as_str() {
+                "share" => {
+                    if parts.len() < 4 {
+                        host::send_chat(player_id, "§eИспользование: §f/home share <дом> <игрок>");
+                        return true;
+                    }
+                    let home_name = parts[2].to_lowercase();
+                    let friend = parts[3].to_string();
+                    let rank = config.rank_for(&store.players[player_id].rank);
+                    let player = store.players.get_mut(player_id).unwrap();
+                    if let Some(home) = player.homes.iter_mut().find(|h| h.name == home_name) {
+                        if home.shared_with.iter().any(|u| u.eq_ignore_ascii_case(&friend)) {
+                            host::send_chat(player_id, &format!("§eИгрок {} уже имеет доступ к дому {}.", friend, home_name));
+                            return true;
+                        }
+                        if home.shared_with.len() >= rank.max_shared_per_home {
+                            host::send_chat(
+                                player_id,
+                                &format!("§c✖ Лимит друзей для этого дома: §e{}", rank.max_shared_per_home),
+                            );
+                            return true;
+                        }
+                        home.shared_with.push(friend.clone());
+                        *dirty = true;
+                        host::send_chat(
+                            player_id,
+                            &format!("§a✔ Игроку §e{} §aвыдан доступ к дому §e{}§a! Телепорт: §f/home {}:{}", friend, home_name, player_id, home_name),
+                        );
+                        host::send_chat(
+                            &friend,
+                            &format!("§6✦ §e{} §fподелился с вами домом §e{}§f! Введите: §a/home {}:{}", player_id, home_name, player_id, home_name),
+                        );
+                    } else {
+                        host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден.", home_name));
+                    }
+                    return true;
+                }
+                "unshare" => {
+                    if parts.len() < 4 {
+                        host::send_chat(player_id, "§eИспользование: §f/home unshare <дом> <игрок>");
+                        return true;
+                    }
+                    let home_name = parts[2].to_lowercase();
+                    let friend = parts[3];
+                    let player = store.players.get_mut(player_id).unwrap();
+                    if let Some(home) = player.homes.iter_mut().find(|h| h.name == home_name) {
+                        let before = home.shared_with.len();
+                        home.shared_with.retain(|u| !u.eq_ignore_ascii_case(friend));
+                        if home.shared_with.len() < before {
+                            *dirty = true;
+                            host::send_chat(player_id, &format!("§a✔ Доступ §e{} §aк дому §e{} §aотозван.", friend, home_name));
+                        } else {
+                            host::send_chat(player_id, "§c✖ Этот игрок не был в списке доступа.");
+                        }
+                    } else {
+                        host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден.", home_name));
+                    }
+                    return true;
+                }
+                "fav" => {
+                    let Some(home_name) = parts.get(2) else {
+                        host::send_chat(player_id, "§eИспользование: §f/home fav <название>");
+                        return true;
+                    };
+                    let key = home_name.to_lowercase();
+                    let player = store.players.get_mut(player_id).unwrap();
+                    if player.homes.iter().any(|h| h.name == key) {
+                        for h in &mut player.homes {
+                            h.is_favorite = h.name == key;
+                        }
+                        *dirty = true;
+                        host::send_chat(player_id, &format!("§6★ Главный дом установлен: §e{}", key));
+                    } else {
+                        host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден.", key));
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+
+            // Shared home teleport: /home owner:home_name
+            if let Some((owner_id, shared_home_name)) = parts[1].split_once(':') {
+                let target_name = shared_home_name.to_lowercase();
+                let found = store.players.get(owner_id).and_then(|owner| {
+                    owner.homes.iter().find(|h| {
+                        h.name == target_name
+                            && (owner_id.eq_ignore_ascii_case(player_id)
+                                || h.shared_with.iter().any(|u| u.eq_ignore_ascii_case(player_id)))
+                    }).map(|h| h.location.clone())
+                });
+                match found {
+                    Some(loc) => {
+                        schedule_teleport(
+                            store,
+                            config,
+                            pending,
+                            combat_tags,
+                            player_id,
+                            &format!("Дом {}:{}", owner_id, target_name),
+                            loc,
+                            false,
+                            dirty,
+                        );
+                    }
+                    None => {
+                        host::send_chat(player_id, "§c✖ Общий дом не найден или у вас нет доступа.");
+                    }
+                }
+                return true;
+            }
+
+            // Own home teleport
             let target = parts[1].to_lowercase();
             let found = store.players.get_mut(player_id).and_then(|p| {
                 p.homes.iter_mut().find(|h| h.name == target).map(|h| {
@@ -1640,20 +2582,18 @@ pub fn handle_command(
 
             match found {
                 Some((name, loc)) => {
-                    schedule_teleport(store, config, pending, player_id, &format!("Дом {}", name), loc);
+                    *dirty = true;
+                    schedule_teleport(store, config, pending, combat_tags, player_id, &format!("Дом {}", name), loc, false, dirty);
                 }
                 None => {
-                    host::send_chat(
-                        player_id,
-                        &format!("§c✖ Дом §e{} §cне найден. Откройте меню: §f/homes", target),
-                    );
+                    host::send_chat(player_id, &format!("§c✖ Дом §e{} §cне найден. Откройте меню: §f/homes", target));
                 }
             }
             true
         }
 
         "/homes" | "/menu" | "/tp" => {
-            menu::open_homes_menu(store, config, player_id, 0);
+            menu::open_homes_menu(store, config, tpa_requests, combat_tags, player_id, 0);
             true
         }
 
@@ -1667,7 +2607,7 @@ pub fn handle_command(
             let before = player.homes.len();
             player.homes.retain(|h| h.name != target);
             if player.homes.len() < before {
-                storage::save_store(store);
+                *dirty = true;
                 host::send_chat(player_id, &format!("§a✔ Дом §e{} §aудалён.", target));
                 host::play_sound(player_id, "minecraft:entity.item.break", 0.7, 1.0);
             } else {
@@ -1690,17 +2630,10 @@ pub fn handle_command(
             if let Some(warp) = store.warps.get(&key).cloned() {
                 let rank = config.rank_for(&store.players[player_id].rank);
                 if rank.tier < warp.min_tier {
-                    host::send_chat(player_id, "§c🔒 Этот варп доступен с более высокого ранга.");
+                    host::send_chat(player_id, &format!("§c🔒 Варп доступен с ранга {}", config.rank_name_for_tier(warp.min_tier)));
                     return true;
                 }
-                schedule_teleport(
-                    store,
-                    config,
-                    pending,
-                    player_id,
-                    &format!("Варп {}", warp.name),
-                    warp.location,
-                );
+                schedule_teleport(store, config, pending, combat_tags, player_id, &format!("Варп {}", warp.name), warp.location, false, dirty);
             } else {
                 host::send_chat(player_id, &format!("§c✖ Варп §e{} §cне найден. Список: /warps", key));
             }
@@ -1718,11 +2651,7 @@ pub fn handle_command(
                 return true;
             };
             let key = name.to_lowercase();
-            let desc = if parts.len() > 2 {
-                parts[2..].join(" ")
-            } else {
-                "Общая точка телепортации".to_string()
-            };
+            let desc = if parts.len() > 2 { parts[2..].join(" ") } else { "Общая точка телепортации".to_string() };
             let loc = host::get_player_location(player_id);
             store.warps.insert(
                 key.clone(),
@@ -1734,11 +2663,8 @@ pub fn handle_command(
                     min_tier: 0,
                 },
             );
-            storage::save_store(store);
-            host::send_chat(
-                player_id,
-                &format!("§a✔ Варп §b{} §aсоздан: §f{}", key, loc.coords_label()),
-            );
+            *dirty = true;
+            host::send_chat(player_id, &format!("§a✔ Варп §b{} §aсоздан: §f{}", key, loc.coords_label()));
             true
         }
 
@@ -1753,7 +2679,7 @@ pub fn handle_command(
                 return true;
             };
             if store.warps.remove(&name.to_lowercase()).is_some() {
-                storage::save_store(store);
+                *dirty = true;
                 host::send_chat(player_id, &format!("§a✔ Варп §b{} §aудалён.", name));
             } else {
                 host::send_chat(player_id, "§c✖ Варп не найден.");
@@ -1762,8 +2688,20 @@ pub fn handle_command(
         }
 
         "/back" => {
-            if let Some(loc) = store.players[player_id].last_location.clone() {
-                schedule_teleport(store, config, pending, player_id, "Прошлая точка", loc);
+            let rank = config.rank_for(&store.players[player_id].rank);
+            let player = &store.players[player_id];
+            if rank.can_back_on_death {
+                if let Some(death_loc) = player.last_death_location.clone() {
+                    schedule_teleport(store, config, pending, combat_tags, player_id, "Точка смерти", death_loc, false, dirty);
+                    return true;
+                }
+            } else if player.last_death_location.is_some() && player.last_location.is_none() {
+                host::send_chat(player_id, "§e✦ Возврат на точку смерти доступен со статуса §e[VIP]§e!");
+                return true;
+            }
+
+            if let Some(loc) = player.last_location.clone() {
+                schedule_teleport(store, config, pending, combat_tags, player_id, "Прошлая точка", loc, false, dirty);
             } else {
                 host::send_chat(player_id, "§c✖ Нет сохранённой предыдущей локации.");
             }
@@ -1794,19 +2732,16 @@ pub fn handle_command(
                 },
             );
 
-            host::send_chat(
-                player_id,
-                &format!("§6✦ §fЗапрос на телепортацию отправлен игроку §e{}§f.", target_id),
-            );
+            host::send_chat(player_id, &format!("§6✦ §fTPA-запрос отправлен игроку §e{}§f.", target_id));
             let action_txt = if summon_here {
-                "приглашает вас телепортироваться к себе"
+                "приглашает вас к себе"
             } else {
                 "хочет телепортироваться к вам"
             };
             host::send_chat(
                 target_id,
                 &format!(
-                    "§6✦ §e{} §f{}. Введите §a/tpaccept §fили §c/tpdeny §7({}с)",
+                    "§6✦ §e{} §f{}. Введите §a/tpaccept§f, §c/tpdeny §fили откройте §e/homes §7({}с)",
                     from_name, action_txt, config.tpa_timeout_seconds
                 ),
             );
@@ -1820,41 +2755,22 @@ pub fn handle_command(
                 Some(req) if now <= req.expires_at_ms => {
                     if req.summon_here {
                         let dest = host::get_player_location(&req.from_id);
-                        schedule_teleport(
-                            store,
-                            config,
-                            pending,
-                            &req.to_id,
-                            &format!("Игрок {}", req.from_name),
-                            dest,
-                        );
+                        schedule_teleport(store, config, pending, combat_tags, &req.to_id, &format!("Игрок {}", req.from_name), dest, false, dirty);
                     } else {
                         let dest = host::get_player_location(&req.to_id);
-                        schedule_teleport(
-                            store,
-                            config,
-                            pending,
-                            &req.from_id,
-                            &format!("Игрок {}", req.to_id),
-                            dest,
-                        );
+                        schedule_teleport(store, config, pending, combat_tags, &req.from_id, &format!("Игрок {}", req.to_id), dest, false, dirty);
                     }
-                    host::send_chat(player_id, "§a✔ Запрос на телепортацию принят!");
+                    host::send_chat(player_id, "§a✔ Запрос принят!");
                 }
-                _ => {
-                    host::send_chat(player_id, "§c✖ У вас нет активных запросов на телепортацию.");
-                }
+                _ => host::send_chat(player_id, "§c✖ У вас нет активных TPA-запросов."),
             }
             true
         }
 
         "/tpdeny" => {
             if let Some(req) = tpa_requests.remove(player_id) {
-                host::send_chat(player_id, "§c✖ Вы отклонили запрос на телепортацию.");
-                host::send_chat(
-                    &req.from_id,
-                    &format!("§c✖ Игрок §e{} §cотклонил ваш запрос.", player_id),
-                );
+                host::send_chat(player_id, "§c✖ Запрос отклонён.");
+                host::send_chat(&req.from_id, &format!("§c✖ Игрок §e{} §cотклонил ваш запрос.", player_id));
             } else {
                 host::send_chat(player_id, "§c✖ Нет активных запросов.");
             }
@@ -1863,28 +2779,27 @@ pub fn handle_command(
 
         "/tpeffect" => {
             let Some(theme_arg) = parts.get(1) else {
-                let list: Vec<String> = AVAILABLE_THEMES
-                    .iter()
-                    .map(|(id, label)| format!("§f{} §8({})", id, label))
-                    .collect();
-                host::send_chat(
-                    player_id,
-                    &format!("§6✦ Доступные эффекты: {}", list.join("§7, ")),
-                );
+                menu::open_effects_menu(store, config, player_id);
                 return true;
             };
-            if let Some((id, label)) = AVAILABLE_THEMES
-                .iter()
-                .find(|(id, _)| id.eq_ignore_ascii_case(theme_arg))
-            {
-                if let Some(p) = store.players.get_mut(player_id) {
-                    p.selected_theme = Some((*id).to_string());
-                    storage::save_store(store);
-                }
-                host::send_chat(player_id, &format!("§a✔ Выбран эффект телепорта: {}", label));
-            } else {
-                host::send_chat(player_id, "§c✖ Неизвестный эффект. Введите /tpeffect для списка.");
+            let rank = config.rank_for(&store.players[player_id].rank);
+            let spec = find_theme(theme_arg);
+            if !spec.id.eq_ignore_ascii_case(theme_arg) {
+                host::send_chat(player_id, "§c✖ Неизвестная тема. Откройте каталог: §f/tpeffect");
+                return true;
             }
+            if !can_use_theme(rank.tier, spec.id) {
+                host::send_chat(
+                    player_id,
+                    &format!("§c🔒 Эффект {} §cдоступен со статуса {}", spec.label, config.rank_name_for_tier(spec.min_tier)),
+                );
+                return true;
+            }
+            if let Some(p) = store.players.get_mut(player_id) {
+                p.selected_theme = Some(spec.id.to_string());
+                *dirty = true;
+            }
+            host::send_chat(player_id, &format!("§a✔ Выбран эффект телепортации: {}", spec.label));
             true
         }
 
@@ -1899,33 +2814,22 @@ pub fn handle_command(
                 return true;
             }
             let target_id = parts[1];
-            let new_rank_id = parts[2].to_lowercase();
-            let new_profile = config.rank_for(&new_rank_id);
+            let new_profile = config.rank_for(parts[2]);
             let target_player = store
                 .players
                 .entry(target_id.to_string())
                 .or_insert_with(|| PlayerRecord::new(target_id, target_id));
             target_player.rank = new_profile.id.clone();
-            storage::save_store(store);
+            *dirty = true;
 
-            let limit_txt = if new_profile.unlimited_homes {
-                "∞".to_string()
-            } else {
-                new_profile.max_homes.to_string()
-            };
+            let limit_txt = if new_profile.unlimited_homes { "∞".to_string() } else { new_profile.max_homes.to_string() };
             host::send_chat(
                 player_id,
-                &format!(
-                    "§a✔ Игроку §e{} §aвыдан статус {}§a(лимит домов: §e{}§a)",
-                    target_id, new_profile.display_prefix, limit_txt
-                ),
+                &format!("§a✔ Игроку §e{} §aвыдан статус {}§a(лимит домов: §e{}§a)", target_id, new_profile.display_prefix, limit_txt),
             );
             host::send_chat(
                 target_id,
-                &format!(
-                    "§6✦ §fВаш статус обновлён до {}§f! Новый лимит домов: §e{}",
-                    new_profile.display_prefix, limit_txt
-                ),
+                &format!("§6✦ §fВаш статус обновлён до {}§f! Новый лимит домов: §e{}", new_profile.display_prefix, limit_txt),
             );
             true
         }
@@ -1943,7 +2847,10 @@ mod models;
 mod storage;
 
 use log::info;
-use models::{EssentialsConfig, EssentialsStore, PendingTeleport, PlayerRecord, TpaRequest};
+use models::{
+    ActiveMeteorFall, CombatTag, EssentialsConfig, EssentialsStore, PendingTeleport, PlayerRecord,
+    TpaRequest,
+};
 use std::collections::HashMap;
 use std::slice;
 use std::str;
@@ -1953,7 +2860,12 @@ struct PluginState {
     config: EssentialsConfig,
     store: EssentialsStore,
     pending_teleports: HashMap<String, PendingTeleport>,
+    active_meteors: HashMap<String, ActiveMeteorFall>,
     tpa_requests: HashMap<String, TpaRequest>,
+    combat_tags: HashMap<String, CombatTag>,
+    dirty: bool,
+    last_autosave_ms: u64,
+    tick_counter: u64,
 }
 
 static STATE: Mutex<Option<PluginState>> = Mutex::new(None);
@@ -1969,16 +2881,22 @@ fn read_str<'a>(ptr: *const u8, len: usize) -> &'a str {
 pub extern "C" fn init() -> i32 {
     let config = storage::load_config();
     let store = storage::load_store();
+    let now = host::now_ms();
 
     let mut guard = STATE.lock().unwrap();
     *guard = Some(PluginState {
         config,
         store,
         pending_teleports: HashMap::new(),
+        active_meteors: HashMap::new(),
         tpa_requests: HashMap::new(),
+        combat_tags: HashMap::new(),
+        dirty: false,
+        last_autosave_ms: now,
+        tick_counter: 0,
     });
 
-    info!("KRONOS Essentials v1.0.0 initialized (Homes, Spawn, Warps, GUI & Teleport FX)");
+    info!("KRONOS Essentials v2.0.0 initialized (Homes, RTP, Anti-Combat, 5 GUIs, Atomic Save)");
     0
 }
 
@@ -1986,10 +2904,12 @@ pub extern "C" fn init() -> i32 {
 pub extern "C" fn cleanup() {
     let mut guard = STATE.lock().unwrap();
     if let Some(ref state) = *guard {
-        storage::save_store(&state.store);
+        if state.dirty {
+            storage::save_store_atomic(&state.store);
+        }
     }
     *guard = None;
-    info!("KRONOS Essentials saved state and unloaded cleanly.");
+    info!("KRONOS Essentials v2.0.0 flushed state and unloaded.");
 }
 
 #[no_mangle]
@@ -2012,20 +2932,42 @@ pub extern "C" fn on_player_join(
         if !name.is_empty() {
             entry.username = name.to_string();
         }
+
+        // Teleport first-time players to spawn if configured
+        let is_first_join = !entry.first_join_completed;
+        if is_first_join {
+            entry.first_join_completed = true;
+            state.dirty = true;
+        }
+
         let rank = state.config.rank_for(&entry.rank);
         let limit = if rank.unlimited_homes {
             "∞".to_string()
         } else {
             rank.max_homes.to_string()
         };
+        let home_count = entry.homes.len();
+        let display_name = entry.username.clone();
+
+        if is_first_join && state.config.teleport_new_players_to_spawn {
+            if let Some(spawn) = state.store.spawn.clone() {
+                host::teleport_player(player_id, &spawn);
+                host::send_title(
+                    player_id,
+                    "§6✦ Добро пожаловать на KRONOS",
+                    "§7Откройте меню телепортов: §e/homes",
+                    10,
+                    60,
+                    20,
+                );
+            }
+        }
+
         host::send_chat(
             player_id,
             &format!(
-                "§6✦ §fДобро пожаловать, {}§f{}! Ваши метки дома: §e{}/{} §7(/homes)",
-                rank.display_prefix,
-                entry.username,
-                entry.homes.len(),
-                limit
+                "§6✦ §fПривет, {}§f{}! Метки дома: §e{}/{} §7(/homes • /rtp)",
+                rank.display_prefix, display_name, home_count, limit
             ),
         );
     }
@@ -2037,12 +2979,21 @@ pub extern "C" fn on_player_leave(player_id_ptr: *const u8, player_id_len: usize
     let mut guard = STATE.lock().unwrap();
     if let Some(ref mut state) = *guard {
         state.pending_teleports.remove(player_id);
+        state.active_meteors.remove(player_id);
         state.tpa_requests.remove(player_id);
-        storage::save_store(&state.store);
+        if state.dirty {
+            storage::save_store_atomic(&state.store);
+            state.dirty = false;
+            state.last_autosave_ms = host::now_ms();
+        }
     }
 }
 
-/// Called every server tick (20 TPS) to animate spirals, check movement cancellation, and complete teleports.
+/// Called every server tick (20 TPS):
+/// - Animates teleport spirals & meteor trails
+/// - Checks movement cancellation & completes teleports
+/// - Displays PvP Combat ActionBar timers
+/// - Cleans expired TPA/combat entries & runs debounced atomic autosave every 30s
 #[no_mangle]
 pub extern "C" fn on_tick() {
     let mut guard = STATE.lock().unwrap();
@@ -2050,68 +3001,163 @@ pub extern "C" fn on_tick() {
         return;
     };
 
-    if state.pending_teleports.is_empty() {
-        return;
-    }
-
+    state.tick_counter = state.tick_counter.wrapping_add(1);
     let now = host::now_ms();
-    let max_move_sq = state.config.cancel_on_move_blocks * state.config.cancel_on_move_blocks;
-    let mut completed: Vec<String> = Vec::new();
-    let mut cancelled: Vec<(String, String)> = Vec::new();
 
-    for (pid, pending) in state.pending_teleports.iter_mut() {
-        let current_loc = host::get_player_location(pid);
-        if current_loc.distance_squared(&pending.origin) > max_move_sq {
-            cancelled.push((pid.clone(), "Вы сдвинулись с места".to_string()));
-            continue;
-        }
+    // 1. Warmup teleports
+    if !state.pending_teleports.is_empty() {
+        let max_move_sq = state.config.cancel_on_move_blocks * state.config.cancel_on_move_blocks;
+        let mut completed: Vec<String> = Vec::new();
+        let mut cancelled: Vec<(String, String)> = Vec::new();
 
-        if now.saturating_sub(pending.started_at_ms) >= pending.duration_ms {
-            completed.push(pid.clone());
-        } else {
-            effects::render_warmup_frame(pending, now);
-        }
-    }
-
-    for (pid, reason) in cancelled {
-        if let Some(pending) = state.pending_teleports.remove(&pid) {
-            effects::play_cancel_effect(&pid, &pending.origin, &reason);
-        }
-    }
-
-    let mut store_dirty = false;
-    for pid in completed {
-        if let Some(pending) = state.pending_teleports.remove(&pid) {
-            if let Some(player) = state.store.players.get_mut(&pid) {
-                player.last_location = Some(pending.origin.clone());
-                player.last_teleport_ms = now;
-                store_dirty = true;
+        for (pid, pending) in state.pending_teleports.iter_mut() {
+            let current_loc = host::get_player_location(pid);
+            if current_loc.distance_squared(&pending.origin) > max_move_sq {
+                cancelled.push((pid.clone(), "Вы сдвинулись с места".to_string()));
+                continue;
             }
-            effects::play_arrival_burst(
-                &pid,
-                &pending.target_label,
-                &pending.origin,
-                &pending.destination,
-                &pending.theme,
-                &state.config,
-            );
+            if now.saturating_sub(pending.started_at_ms) >= pending.duration_ms {
+                completed.push(pid.clone());
+            } else {
+                effects::render_warmup_frame(pending, now);
+            }
+        }
+
+        for (pid, reason) in cancelled {
+            if let Some(pending) = state.pending_teleports.remove(&pid) {
+                effects::play_cancel_effect(&pid, &pending.origin, &reason);
+            }
+        }
+
+        for pid in completed {
+            if let Some(pending) = state.pending_teleports.remove(&pid) {
+                if let Some(player) = state.store.players.get_mut(&pid) {
+                    player.last_location = Some(pending.origin.clone());
+                    player.last_teleport_ms = now;
+                    state.dirty = true;
+                }
+                if pending.is_rtp_meteor {
+                    let meteor = effects::play_rtp_meteor_launch(
+                        &pid,
+                        &pending.origin,
+                        &pending.destination,
+                        &state.config,
+                        now,
+                    );
+                    state.active_meteors.insert(pid, meteor);
+                } else {
+                    effects::play_arrival_burst(
+                        &pid,
+                        &pending.target_label,
+                        &pending.origin,
+                        &pending.destination,
+                        &pending.theme,
+                        &state.config,
+                    );
+                }
+            }
         }
     }
 
-    if store_dirty {
-        storage::save_store(&state.store);
+    // 2. Active RTP meteor drop particle trails
+    if !state.active_meteors.is_empty() {
+        state.active_meteors.retain(|_, fall| {
+            if now >= fall.expires_at_ms {
+                return false;
+            }
+            effects::render_meteor_trail_frame(fall);
+            true
+        });
+    }
+
+    // 3. Every 1 second (20 ticks): combat ActionBar countdown + expired TPA/combat cleanup
+    if state.tick_counter % 20 == 0 {
+        state.tpa_requests.retain(|_, req| req.expires_at_ms > now);
+        state.combat_tags.retain(|pid, tag| {
+            if tag.expires_at_ms <= now {
+                host::send_action_bar(pid, "§a✔ Вы вышли из боя — телепорты снова доступны");
+                return false;
+            }
+            let left = (tag.expires_at_ms - now + 999) / 1000;
+            if !state.pending_teleports.contains_key(pid) {
+                host::send_action_bar(
+                    pid,
+                    &format!("§c⚔ Режим боя ({}) §8• §e{}с §7(телепорт заблокирован)", tag.opponent, left),
+                );
+            }
+            true
+        });
+
+        // Debounced atomic autosave
+        let interval_ms = state.config.autosave_interval_seconds.max(5) * 1000;
+        if state.dirty && now.saturating_sub(state.last_autosave_ms) >= interval_ms {
+            storage::save_store_atomic(&state.store);
+            state.dirty = false;
+            state.last_autosave_ms = now;
+        }
     }
 }
 
+/// Cancels warmup teleports on damage and tags both players in PvP combat if attacker_id is provided.
 #[no_mangle]
-pub extern "C" fn on_player_damage(player_id_ptr: *const u8, player_id_len: usize) {
+pub extern "C" fn on_player_damage(
+    player_id_ptr: *const u8,
+    player_id_len: usize,
+    attacker_id_ptr: *const u8,
+    attacker_id_len: usize,
+) {
     let player_id = read_str(player_id_ptr, player_id_len);
+    let attacker_id = read_str(attacker_id_ptr, attacker_id_len);
+
     let mut guard = STATE.lock().unwrap();
     if let Some(ref mut state) = *guard {
         if state.config.cancel_on_damage {
             if let Some(pending) = state.pending_teleports.remove(player_id) {
                 effects::play_cancel_effect(player_id, &pending.origin, "Получен урон");
             }
+        }
+
+        if !attacker_id.is_empty() && attacker_id != player_id && state.config.combat_tag_seconds > 0 {
+            let expires = host::now_ms() + state.config.combat_tag_seconds * 1000;
+            state.combat_tags.insert(
+                player_id.to_string(),
+                CombatTag {
+                    opponent: attacker_id.to_string(),
+                    expires_at_ms: expires,
+                },
+            );
+            state.combat_tags.insert(
+                attacker_id.to_string(),
+                CombatTag {
+                    opponent: player_id.to_string(),
+                    expires_at_ms: expires,
+                },
+            );
+        }
+    }
+}
+
+/// Saves death location for VIP+ /back and clears combat tag.
+#[no_mangle]
+pub extern "C" fn on_player_death(player_id_ptr: *const u8, player_id_len: usize) {
+    let player_id = read_str(player_id_ptr, player_id_len);
+    let mut guard = STATE.lock().unwrap();
+    if let Some(ref mut state) = *guard {
+        let death_loc = host::get_player_location(player_id);
+        state.combat_tags.remove(player_id);
+        state.pending_teleports.remove(player_id);
+
+        let entry = state
+            .store
+            .players
+            .entry(player_id.to_string())
+            .or_insert_with(|| PlayerRecord::new(player_id, player_id));
+        entry.last_death_location = Some(death_loc);
+        state.dirty = true;
+
+        let rank = state.config.rank_for(&entry.rank);
+        if rank.can_back_on_death {
+            host::send_chat(player_id, "§e☠ Точка смерти сохранена! Вернитесь командой §a/back");
         }
     }
 }
@@ -2133,6 +3179,8 @@ pub extern "C" fn on_player_command(
             &state.config,
             &mut state.pending_teleports,
             &mut state.tpa_requests,
+            &state.combat_tags,
+            &mut state.dirty,
             player_id,
             command,
         );
@@ -2156,77 +3204,110 @@ pub extern "C" fn on_menu_click(
 
     let mut guard = STATE.lock().unwrap();
     if let Some(ref mut state) = *guard {
-        let handled = menu::handle_menu_click(
-            &mut state.store,
-            &state.config,
-            &mut state.pending_teleports,
+        let mut ctx = menu::MenuDispatchContext {
+            store: &mut state.store,
+            config: &state.config,
+            pending: &mut state.pending_teleports,
+            tpa_requests: &mut state.tpa_requests,
+            combat_tags: &state.combat_tags,
+            dirty: &mut state.dirty,
+        };
+        return menu::handle_menu_click(
+            &mut ctx,
             player_id,
             menu_id,
             slot,
             click_type,
             commands::schedule_teleport,
+            commands::trigger_rtp,
         );
-        if handled {
-            storage::save_store(&state.store);
-        }
-        return handled;
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rank_home_limits_scale_properly() {
+        let cfg = storage::default_config();
+        assert_eq!(cfg.rank_for("player").max_homes, 3);
+        assert_eq!(cfg.rank_for("vip").max_homes, 5);
+        assert_eq!(cfg.rank_for("premium").max_homes, 7);
+        assert_eq!(cfg.rank_for("legend").max_homes, 10);
+        assert!(cfg.rank_for("owner").unlimited_homes);
+    }
+
+    #[test]
+    fn effects_are_gated_by_rank_tier() {
+        assert!(effects::can_use_theme(0, "amethyst_spiral"));
+        assert!(!effects::can_use_theme(0, "golden_vortex"));
+        assert!(effects::can_use_theme(1, "golden_vortex"));
+        assert!(!effects::can_use_theme(2, "dragon_nova"));
+        assert!(effects::can_use_theme(3, "dragon_nova"));
+        assert!(effects::can_use_theme(4, "kronos_rift"));
+    }
+
+    #[test]
+    fn rtp_coordinates_stay_within_configured_radius() {
+        let mut seed = 123456789u64;
+        for _ in 0..50 {
+            let (x, z) = commands::sample_rtp_xz(&mut seed, 250, 4500);
+            let dist = (x * x + z * z).sqrt();
+            assert!(dist >= 248.0 && dist <= 4502.0);
+        }
+    }
+
+    #[test]
+    fn combat_tag_blocks_until_expiry() {
+        let mut tags = HashMap::new();
+        tags.insert(
+            "steve".to_string(),
+            CombatTag {
+                opponent: "alex".to_string(),
+                expires_at_ms: 10_000,
+            },
+        );
+        assert_eq!(commands::remaining_combat_seconds(&tags, "steve", 7_500), 3);
+        assert_eq!(commands::remaining_combat_seconds(&tags, "steve", 10_500), 0);
+    }
+}
 `,
 
-    'README.md': `# KRONOS Essentials — Rust WASM Plugin (Pumpkin 26.3)
+    'README.md': `# KRONOS Essentials v2.0.0 — Rust WASM Plugin (Pumpkin 26.3)
 
-Полноценный плагин базовых команд, интерактивного GUI-меню телепортов, системы статусов с масштабируемыми лимитами домов и кинематографичных анимаций телепортации.
+Полный комплект телепортации, безопасности, 5 интерактивных Chest GUI-меню, системы статусов с масштабируемыми лимитами домов и кинематографичных эффектов на Rust WASM (\`wasm32-wasip1\`).
 
-## Возможности
+## Что нового в v2.0.0
+- **Anti-Combat (PvP-блокировка):** 15-секундный таймер боя с обратным отсчётом в ActionBar, запрещающий сбегать через \`/home\`, \`/spawn\`, \`/warp\`, \`/rtp\`, \`/tpa\`.
+- **Safe Teleport + защита после переноса:** проверка безопасности точки (лава / блоки / пустота) + 2.5с \`resistance\` на прогрузку чанков.
+- **\`/rtp\` с метеоритным десантом:** поиск безопасной суши + падение с неба с \`slow_falling\` и огненным шлейфом частиц.
+- **Общие дома с друзьями:** \`/home share <дом> <игрок>\`, \`/home unshare <дом> <игрок>\` и телепорт \`/home <владелец>:<дом>\`.
+- **Главный дом ★ и точка смерти \`/back\`:** авто-телепорт новичков на спавн и возврат на точку смерти для \`VIP+\`.
+- **5 интерактивных GUI-меню:**
+  1. Главное меню домов и быстрых телепортов (54 слота, пагинация, иконки, RTP, Spawn, Warps, Back, FX, TPA).
+  2. Подменю настроек дома (\`Shift+ЛКМ\`): Главный дом ★, Переместить точку сюда, Сменить иконку, Удалить.
+  3. Модальное окно подтверждения удаления (\`ПКМ\`): защита от случайного удаления базы.
+  4. Каталог эффектов телепортации с привязкой к статусам и замками.
+  5. Менеджер входящих \`/tpa\`-запросов (принять/отклонить в один клик).
+- **Атомарное отложенное сохранение:** запись через \`store.json.tmp → rename\` раз в 30 секунд + при выгрузке, авто-очистка просроченных запросов и встроенные \`cargo test\` юнит-тесты.
 
-### 1. Команды
-- \`/spawn\` — телепорт на спавн (с отсчётом и анимацией)
-- \`/setspawn\` — установить точку спавна (Admin / Owner)
-- \`/sethome [название] [иконка]\` — сохранить точку дома с проверкой лимита ранга
-- \`/home [название]\` — телепорт в дом (без аргументов открывает GUI-меню)
-- \`/homes\` / \`/menu\` — интерактивное 54-слотовое меню домов, спавна, варпов и эффектов
-- \`/delhome <название>\` — удалить метку дома
-- \`/warp <название>\` / \`/warps\` — телепорт на варп и GUI-список варпов
-- \`/setwarp <название> [описание]\` / \`/delwarp <название>\` — управление варпами
-- \`/back\` — вернуться в точку до последнего телепорта
-- \`/tpa <игрок>\`, \`/tpahere <игрок>\`, \`/tpaccept\`, \`/tpdeny\` — телепортация к игрокам
-- \`/tpeffect [тема]\` — смена визуальной темы анимации телепорта
-- \`/setrank <игрок> <ранг>\` — выдача статуса (мгновенно обновляет лимит домов)
+## Статусы и лимиты (\`data/config.json\`)
+| Статус | Дома | Друзей на дом | Отсчёт | Кулдаун | \`/back\` смерти | Эффект по умолчанию |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| \`player\` | **3** | 2 | 3с | 15с | ✖ | Аметистовая спираль |
+| \`vip\` | **5** | 4 | 2с | 10с | ✔ | Золотой вихрь |
+| \`premium\` | **7** | 6 | 2с | 6с | ✔ | Изумрудный импульс |
+| \`legend\` | **10** | 10 | 1с | 3с | ✔ | Драконья сверхновая |
+| \`admin\` / \`owner\` | **∞** | 50 | 0с | 0с | ✔ | Разлом KRONOS |
 
-### 2. Статусы и лимиты меток (\`data/config.json\`)
-| Статус | Префикс | Лимит домов | Отсчёт | Кулдаун | Тема анимации |
-| :--- | :--- | :---: | :---: | :---: | :--- |
-| \`player\` | \`[ИГРОК]\` | **3** | 3с | 15с | Аметистовая спираль |
-| \`vip\` | \`[VIP]\` | **5** | 2с | 10с | Золотой вихрь |
-| \`premium\` | \`[PREMIUM]\` | **7** | 2с | 6с | Изумрудный импульс |
-| \`legend\` | \`[LEGEND]\` | **10** | 1с | 3с | Драконья сверхновая |
-| \`admin\` | \`[ADMIN]\` | **∞** | 0с | 0с | Разлом KRONOS |
-| \`owner\` | \`[OWNER]\` | **∞** | 0с | 0с | Разлом KRONOS |
-
-> Все лимиты, таймеры и темы редактируются прямо в \`data/config.json\` без пересборки (можно выставить хоть \`3 → 5 → 7\`, хоть \`3 → 6 → 12 → 24\`).
-
-### 3. Эффекты и анимации телепортации (\`src/effects.rs\`)
-- **Двойная восходящая спираль частиц** вокруг игрока (20 FPS через \`on_tick\`) + рунический круг под ногами.
-- **Прогресс-бар в ActionBar** (\`[■■■■■■□□□□]\`) с обратным отсчётом и нарастающими нотами (\`block.note_block.chime\`).
-- **Вспышка прибытия**: 3D-ударная волна из 16 частиц, световой столб, короткий эффект плавного перехода (\`blindness\` 16 тиков + \`slow_falling\` 30 тиков), многослойный звук и Title-баннер с координатами.
-- **Защита от движения и урона**: автоматическая отмена с дымовым кольцом и звуковым сигналом при сдвиге или получении урона во время отсчёта.
-
-### 4. Интерактивное Chest GUI-меню (\`src/menu.rs\`)
-- **ЛКМ по дому** — запуск телепортации.
-- **Shift+ЛКМ по дому** — смена иконки дома (кровать, костёр, кирка, сундук, маяк, звезда Незера и др.).
-- **ПКМ по дому** — удаление метки.
-- **Клик по зелёному стеклу** — быстрое создание новой метки дома в один клик.
-- **Серые замки** — показывают, с какого ранга открываются следующие слоты.
-- **Нижняя панель**: Спавн, Варпы, \`/back\`, переключатель стиля анимации и пагинация страниц.
-
-## Сборка под Pumpkin 26.3
+## Проверка тестами и сборка
 \`\`\`bash
+cargo test
 rustup target add wasm32-wasip1
 cargo build --target wasm32-wasip1 --release
 \`\`\`
-Готовый \`.wasm\` файл появится в \`target/wasm32-wasip1/release/kronos_essentials.wasm\` — перенесите его в папку \`plugins/\` вашего сервера.
 `,
   },
 };
