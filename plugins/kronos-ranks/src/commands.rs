@@ -292,10 +292,15 @@ pub fn handle_command(
                     }
                 }
                 "perm" => {
-                    let allowed = actor_is_console
-                        || store
-                            .profiles
-                            .get(&actor_key)
+                    let actor_prof = store.profiles.get(&actor_key).cloned();
+                    let is_owner = actor_is_console
+                        || actor_prof
+                            .as_ref()
+                            .map(|p| hierarchy::primary_rank(config, p).id == "owner")
+                            .unwrap_or(false);
+                    let allowed = is_owner
+                        || actor_prof
+                            .as_ref()
                             .map(|p| hierarchy::has_permission(config, p, "kronos.ranks.perm.manage"))
                             .unwrap_or(false);
                     if !allowed {
@@ -310,23 +315,89 @@ pub fn handle_command(
                         return true;
                     }
                     let tkey = hierarchy::normalize_key(args[1]);
-                    let node = args[3];
-                    match args[2].to_lowercase().as_str() {
+                    let node = args[3].trim();
+                    let node_lower = node.to_lowercase();
+                    let action = args[2].to_lowercase();
+
+                    if action == "add" || action == "remove" {
+                        // Prevent privilege escalation: only Owner / CONSOLE can grant or revoke root/rank wildcards
+                        let restricted_node = node_lower == "*"
+                            || node_lower == "kronos.*"
+                            || node_lower.starts_with("kronos.ranks.");
+                        if restricted_node && !is_owner {
+                            host::send_chat(
+                                player_id,
+                                "§c✗ Выдача/снятие прав §e*§c, §ekronos.*§c и §ekronos.ranks.*§c доступна только Владельцу!",
+                            );
+                            return true;
+                        }
+                        if !is_owner {
+                            let actor_w = actor_prof
+                                .as_ref()
+                                .map(|p| hierarchy::primary_rank(config, p).weight)
+                                .unwrap_or(0);
+                            let target_w = store
+                                .profiles
+                                .get(&tkey)
+                                .map(|p| hierarchy::primary_rank(config, p).weight)
+                                .unwrap_or(0);
+                            if target_w >= actor_w {
+                                host::send_chat(
+                                    player_id,
+                                    "§c✗ Нельзя менять права игроку с равным или более высоким рангом.",
+                                );
+                                return true;
+                            }
+                        }
+                    }
+
+                    match action.as_str() {
                         "add" => {
                             let prof = store
                                 .profiles
                                 .entry(tkey)
                                 .or_insert_with(|| PlayerRankProfile::new(args[1], now));
-                            if !prof.extra_permissions.iter().any(|p| p == node) {
+                            if !prof.extra_permissions.iter().any(|p| p.eq_ignore_ascii_case(node)) {
                                 prof.extra_permissions.push(node.to_string());
+                                let audit_id = store.next_audit_id.max(1);
+                                store.next_audit_id = audit_id + 1;
+                                store.audit_log.push(crate::models::RankAuditEntry {
+                                    id: audit_id,
+                                    actor_name: actor_name.clone(),
+                                    target_name: args[1].to_string(),
+                                    action: "PERM_ADD".into(),
+                                    rank_id: node.to_string(),
+                                    duration_label: "-".into(),
+                                    ts_ms: now,
+                                });
+                                if store.audit_log.len() > 500 {
+                                    store.audit_log.remove(0);
+                                }
                                 *dirty = true;
                             }
                             host::send_chat(player_id, &format!("§a✓ Право §e{} §aдобавлено §f{}.", node, args[1]));
                         }
                         "remove" => {
                             if let Some(prof) = store.profiles.get_mut(&tkey) {
-                                prof.extra_permissions.retain(|p| p != node);
-                                *dirty = true;
+                                let before = prof.extra_permissions.len();
+                                prof.extra_permissions.retain(|p| !p.eq_ignore_ascii_case(node));
+                                if prof.extra_permissions.len() != before {
+                                    let audit_id = store.next_audit_id.max(1);
+                                    store.next_audit_id = audit_id + 1;
+                                    store.audit_log.push(crate::models::RankAuditEntry {
+                                        id: audit_id,
+                                        actor_name: actor_name.clone(),
+                                        target_name: args[1].to_string(),
+                                        action: "PERM_REMOVE".into(),
+                                        rank_id: node.to_string(),
+                                        duration_label: "-".into(),
+                                        ts_ms: now,
+                                    });
+                                    if store.audit_log.len() > 500 {
+                                        store.audit_log.remove(0);
+                                    }
+                                    *dirty = true;
+                                }
                             }
                             host::send_chat(player_id, &format!("§eПраво §f{} §eудалено у §f{}.", node, args[1]));
                         }
@@ -367,7 +438,7 @@ pub fn handle_command(
                         host::send_chat(player_id, "§7Суффикс сброшен.");
                     } else {
                         let raw = args[1..].join(" ");
-                        if raw.len() > 24 {
+                        if raw.chars().count() > 24 {
                             host::send_chat(player_id, "§c✗ Максимальная длина суффикса — 24 символа.");
                             return true;
                         }

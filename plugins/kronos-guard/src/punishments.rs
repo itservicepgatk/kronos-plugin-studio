@@ -3,6 +3,7 @@ use crate::models::{
     format_duration_ru, parse_duration_seconds, GuardConfig, GuardStore, PunishmentKind,
     PunishmentRecord, RuntimeSession,
 };
+use crate::storage;
 
 pub fn normalize_key(name: &str) -> String {
     name.trim().to_lowercase()
@@ -33,12 +34,10 @@ pub fn check_hierarchy(
     }
     let staff_weight = config.perms_for(staff_rank).weight;
     let target_key = normalize_key(target_name);
-    let target_rank = store
-        .known_ranks
-        .get(&target_key)
-        .map(|s| s.as_str())
-        .unwrap_or("player");
-    let target_weight = config.perms_for(target_rank).weight;
+    let target_rank = storage::resolve_rank_from_bridge(target_name)
+        .or_else(|| store.known_ranks.get(&target_key).cloned())
+        .unwrap_or_else(|| "player".to_string());
+    let target_weight = config.perms_for(&target_rank).weight;
 
     if target_weight >= staff_weight {
         return Err(format!(
@@ -185,7 +184,7 @@ pub fn issue_punishment(
             }
             PunishmentKind::IpBan => {
                 if !perms.can_ipban {
-                    return Err("§c✗ IP-бан доступен с ранга §cАдмин§c.".into());
+                    return Err("§c✗ IP-бан доступен с ранга §bТех.Админ§c.".into());
                 }
             }
         }

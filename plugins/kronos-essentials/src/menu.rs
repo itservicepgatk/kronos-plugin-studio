@@ -30,7 +30,7 @@ pub fn open_homes_menu(
     let Some(player) = store.players.get(player_id) else {
         return;
     };
-    let rank = config.rank_for(&player.rank);
+    let rank = config.effective_rank_for(player);
     let limit_text = if rank.unlimited_homes {
         "∞".to_string()
     } else {
@@ -69,9 +69,9 @@ pub fn open_homes_menu(
         .favorite_home()
         .map(|h| format!("§6★ {}", h.name))
         .unwrap_or_else(|| "§8не выбран".to_string());
-    let next_hint = match config.next_rank_after(rank.tier) {
+    let next_hint = match config.next_donate_after(&rank) {
         Some(next) if !rank.unlimited_homes => format!(
-            "§7Следующий ранг {}: §e{} меток",
+            "§7Следующий донат {}: §e{} меток",
             next.display_prefix.trim(),
             next.max_homes
         ),
@@ -139,12 +139,7 @@ pub fn open_homes_menu(
                 enchanted: false,
             });
         } else {
-            let unlock_rank = config
-                .ranks
-                .iter()
-                .find(|r| r.unlimited_homes || r.max_homes > home_index)
-                .map(|r| r.display_prefix.trim().to_string())
-                .unwrap_or_else(|| "§d[LEGEND]".to_string());
+            let unlock_rank = config.donate_unlock_for_slot(home_index);
 
             slots.push(MenuSlot {
                 slot: slot_num,
@@ -152,7 +147,7 @@ pub fn open_homes_menu(
                 name: "§8🔒 Заблокированный слот".to_string(),
                 lore: vec![
                     format!("§7Доступно с ранга {}", unlock_rank),
-                    "§7Лимиты статусов: §e3 → 5 → 7 → 10 → ∞".to_string(),
+                    "§7Донат-ветка (/donate): §e3 → 5 → 7 → ... → 50".to_string(),
                 ],
                 enchanted: false,
             });
@@ -400,7 +395,7 @@ pub fn open_effects_menu(store: &EssentialsStore, config: &EssentialsConfig, pla
     let Some(player) = store.players.get(player_id) else {
         return;
     };
-    let rank = config.rank_for(&player.rank);
+    let rank = config.effective_rank_for(player);
     let active_id = player.active_theme(&rank);
     let effect_slots: [u8; 5] = [11, 12, 13, 14, 15];
 
@@ -527,7 +522,7 @@ pub fn open_warps_menu(store: &EssentialsStore, config: &EssentialsConfig, playe
     let Some(player) = store.players.get(player_id) else {
         return;
     };
-    let rank = config.rank_for(&player.rank);
+    let rank = config.effective_rank_for(player);
     let mut slots: Vec<MenuSlot> = Vec::new();
 
     let mut sorted_warps: Vec<_> = store.warps.values().collect();
@@ -701,7 +696,7 @@ pub fn handle_menu_click(
         if let Some(idx) = effect_slots.iter().position(|&s| s == slot) {
             let theme = &THEME_SPECS[idx];
             if let Some(player) = ctx.store.players.get_mut(player_id) {
-                let rank = ctx.config.rank_for(&player.rank);
+                let rank = ctx.config.effective_rank_for(player);
                 if !can_use_theme(rank.tier, theme.id) {
                     host::send_chat(
                         player_id,
@@ -792,7 +787,7 @@ pub fn handle_menu_click(
                     .store
                     .players
                     .get(player_id)
-                    .map(|p| ctx.config.rank_for(&p.rank))
+                    .map(|p| ctx.config.effective_rank_for(p))
                     .unwrap_or_else(|| ctx.config.ranks[0].clone());
                 if rank.tier < warp.min_tier {
                     host::send_chat(player_id, "§c🔒 Недостаточный статус для этого варпа.");
@@ -859,7 +854,7 @@ pub fn handle_menu_click(
             49 => {
                 host::close_menu(player_id);
                 let target = ctx.store.players.get(player_id).and_then(|p| {
-                    let rank = ctx.config.rank_for(&p.rank);
+                    let rank = ctx.config.effective_rank_for(p);
                     if rank.can_back_on_death {
                         p.last_death_location.clone().or_else(|| p.last_location.clone())
                     } else {
@@ -903,7 +898,7 @@ pub fn handle_menu_click(
             let Some(player) = ctx.store.players.get_mut(player_id) else {
                 return true;
             };
-            let rank = ctx.config.rank_for(&player.rank);
+            let rank = ctx.config.effective_rank_for(player);
 
             if home_idx < player.homes.len() {
                 let home_name = player.homes[home_idx].name.clone();

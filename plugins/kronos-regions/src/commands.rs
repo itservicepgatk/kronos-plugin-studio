@@ -47,7 +47,7 @@ pub fn handle_wand_click(
     // Auto 3D preview when both points are set
     if let (Some(p1), Some(p2)) = (&sel.pos1, &sel.pos2) {
         if let Some(bounds) = RegionBounds::from_points(p1, p2) {
-            let rank = config.rank_for(store.rank_id_of(player_id));
+            let rank = config.effective_rank_for(store, player_id);
             let overlap = protection::find_overlap(store, &bounds, None);
             let vol = bounds.volume();
             let (dx, dy, dz) = bounds.dimensions();
@@ -107,11 +107,11 @@ pub fn try_claim_selection(
         return;
     }
 
-    let rank = config.rank_for(store.rank_id_of(player_id));
+    let rank = config.effective_rank_for(store, player_id);
     let owned = store.owned_count(player_id);
     if !rank.unlimited_regions && owned >= rank.max_regions {
         let next_hint = config
-            .next_rank_after(rank.tier)
+            .next_donate_after(&rank)
             .map(|n| format!(" Статус {} открывает до {} приватов!", n.display_prefix.trim(), n.max_regions))
             .unwrap_or_default();
         host::send_chat(
@@ -211,7 +211,7 @@ pub fn try_resize_region(
         host::send_chat(player_id, "§c✖ Приват не найден.");
         return;
     };
-    let rank = config.rank_for(store.rank_id_of(player_id));
+    let rank = config.effective_rank_for(store, player_id);
     let Some(current) = store.regions.get(&rg_id).cloned() else {
         return;
     };
@@ -319,7 +319,7 @@ pub fn handle_command(
                 host::send_chat(player_id, "§c✖ Приват не найден.");
                 return true;
             };
-            let rank = config.rank_for(store.rank_id_of(player_id));
+            let rank = config.effective_rank_for(store, player_id);
             if let Some(rg) = store.regions.get_mut(&rg_id) {
                 if !rg.is_owner(player_id) && !rank.bypass_protection {
                     host::send_chat(player_id, "§c✖ Только владелец может переименовать приват.");
@@ -365,7 +365,7 @@ pub fn handle_command(
                 return true;
             };
             let val = matches!(parts[4].to_lowercase().as_str(), "on" | "true" | "allow" | "1");
-            let rank = config.rank_for(store.rank_id_of(player_id));
+            let rank = config.effective_rank_for(store, player_id);
             if let Some(rg) = store.regions.get_mut(&rg_id) {
                 if !rg.is_officer_or_owner(player_id) && !rank.bypass_protection {
                     host::send_chat(player_id, "§c✖ Нет прав для изменения флагов.");
@@ -425,7 +425,7 @@ pub fn handle_command(
                 host::send_chat(player_id, "§c✖ Приват не найден.");
                 return true;
             };
-            let rank = config.rank_for(store.rank_id_of(player_id));
+            let rank = config.effective_rank_for(store, player_id);
             if let Some(rg) = store.regions.get_mut(&rg_id) {
                 if !rg.is_officer_or_owner(player_id) && !rank.bypass_protection {
                     host::send_chat(player_id, "§c✖ Нет прав для добавления участников.");
@@ -468,9 +468,9 @@ pub fn handle_command(
             }
         }
         "greeting" => {
-            let rank = config.rank_for(store.rank_id_of(player_id));
+            let rank = config.effective_rank_for(store, player_id);
             if !rank.can_set_greeting {
-                host::send_chat(player_id, "§c🔒 Приветствие при входе доступно со статуса §e[VIP]§c!");
+                host::send_chat(player_id, "§c🔒 Приветствие при входе доступно со статуса §b[PREMIUM]§c!");
                 return true;
             }
             if parts.len() < 4 {
@@ -515,17 +515,26 @@ pub fn handle_command(
             }
         }
         "setrank" => {
-            let caller = config.rank_for(store.rank_id_of(player_id));
+            let caller = config.effective_rank_for(store, player_id);
             if !caller.bypass_protection {
                 host::send_chat(player_id, "§c✖ Недостаточно прав.");
                 return true;
             }
             if parts.len() < 4 {
-                host::send_chat(player_id, "§eИспользование: §f/rg setrank <игрок> <player|vip|premium|legend|admin|owner>");
+                host::send_chat(player_id, "§eИспользование: §f/rg setrank <игрок> <ранг из 20> §7(рекомендуется /rank set)");
                 return true;
             }
-            let profile = config.rank_for(parts[3]);
-            store.player_ranks.insert(parts[2].to_string(), profile.id.clone());
+            let Some(profile) = config.find_rank(parts[3]).cloned() else {
+                host::send_chat(player_id, &format!("§c✖ Неизвестный ранг §e{}§c. Список: §f/rank list", parts[3]));
+                return true;
+            };
+            let target_key = store
+                .player_names
+                .iter()
+                .find(|(_, uname)| uname.eq_ignore_ascii_case(parts[2]))
+                .map(|(pid, _)| pid.clone())
+                .unwrap_or_else(|| parts[2].to_string());
+            store.player_ranks.insert(target_key, profile.id.clone());
             *dirty = true;
             host::send_chat(
                 player_id,

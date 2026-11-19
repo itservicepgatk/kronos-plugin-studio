@@ -256,19 +256,74 @@ pub struct RegionsConfig {
 }
 
 impl RegionsConfig {
+    pub fn find_rank(&self, rank_id: &str) -> Option<&RankPolicy> {
+        self.ranks.iter().find(|r| r.id.eq_ignore_ascii_case(rank_id))
+    }
+
     pub fn rank_for(&self, rank_id: &str) -> RankPolicy {
-        self.ranks
-            .iter()
-            .find(|r| r.id.eq_ignore_ascii_case(rank_id))
+        self.find_rank(rank_id)
             .cloned()
             .unwrap_or_else(|| self.ranks[0].clone())
     }
 
-    pub fn next_rank_after(&self, tier: u8) -> Option<&RankPolicy> {
-        self.ranks
+    /// Merges primary (staff/donate) rank and purchased donate rank so staff never lose bought region limits or themes.
+    pub fn effective_rank_for(&self, store: &RegionStore, player_id: &str) -> RankPolicy {
+        let primary = self.rank_for(store.rank_id_of(player_id));
+        let Some(donate_id) = store.player_donate_ranks.get(player_id) else {
+            return primary;
+        };
+        if donate_id.eq_ignore_ascii_case(&primary.id) {
+            return primary;
+        }
+        let donate = self.rank_for(donate_id);
+        let default_border_theme = if donate.tier > primary.tier {
+            donate.default_border_theme
+        } else {
+            primary.default_border_theme
+        };
+        RankPolicy {
+            id: primary.id,
+            tier: primary.tier.max(donate.tier),
+            display_prefix: primary.display_prefix,
+            max_regions: primary.max_regions.max(donate.max_regions),
+            max_volume: primary.max_volume.max(donate.max_volume),
+            max_members: primary.max_members.max(donate.max_members),
+            default_border_theme,
+            can_toggle_pvp: primary.can_toggle_pvp || donate.can_toggle_pvp,
+            can_toggle_fall_damage: primary.can_toggle_fall_damage || donate.can_toggle_fall_damage,
+            can_toggle_mob_spawning: primary.can_toggle_mob_spawning || donate.can_toggle_mob_spawning,
+            can_toggle_entry: primary.can_toggle_entry || donate.can_toggle_entry,
+            can_set_greeting: primary.can_set_greeting || donate.can_set_greeting,
+            unlimited_regions: primary.unlimited_regions || donate.unlimited_regions,
+            bypass_protection: primary.bypass_protection || donate.bypass_protection,
+        }
+    }
+
+    /// Returns the next higher donate rank strictly above `current.max_regions` (never recommends staff ranks).
+    pub fn next_donate_after(&self, current: &RankPolicy) -> Option<&RankPolicy> {
+        if current.unlimited_regions {
+            return None;
+        }
+        const DONATE_ORDER: &[&str] = &[
+            "vip", "premium", "deluxe", "elite", "titan", "legend", "emperor", "overlord", "immortal", "kronos",
+        ];
+        DONATE_ORDER
             .iter()
-            .filter(|r| r.tier > tier)
-            .min_by_key(|r| r.tier)
+            .filter_map(|id| self.find_rank(id))
+            .find(|r| r.max_regions > current.max_regions)
+    }
+
+    /// Returns the lowest donate rank that unlocks the requested region slot index (0-based).
+    pub fn donate_unlock_for_slot(&self, slot_idx: usize) -> String {
+        const DONATE_ORDER: &[&str] = &[
+            "vip", "premium", "deluxe", "elite", "titan", "legend", "emperor", "overlord", "immortal", "kronos",
+        ];
+        DONATE_ORDER
+            .iter()
+            .filter_map(|id| self.find_rank(id))
+            .find(|r| r.max_regions > slot_idx)
+            .map(|r| r.display_prefix.trim().to_string())
+            .unwrap_or_else(|| "§6§l✦KRONOS✦".to_string())
     }
 
     pub fn rank_label_for_tier(&self, min_tier: u8) -> String {
@@ -276,7 +331,7 @@ impl RegionsConfig {
             .iter()
             .find(|r| r.tier >= min_tier)
             .map(|r| r.display_prefix.trim().to_string())
-            .unwrap_or_else(|| "§c[ADMIN]".to_string())
+            .unwrap_or_else(|| "§6§l✦KRONOS✦".to_string())
     }
 }
 
@@ -284,6 +339,8 @@ impl RegionsConfig {
 pub struct RegionStore {
     pub regions: HashMap<String, Region>,
     pub player_ranks: HashMap<String, String>,
+    #[serde(default)]
+    pub player_donate_ranks: HashMap<String, String>,
     pub player_names: HashMap<String, String>,
     pub next_id_counter: u64,
 }

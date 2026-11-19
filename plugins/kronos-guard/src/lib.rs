@@ -188,6 +188,12 @@ pub extern "C" fn on_tick() {
         }
     }
 
+    // Every 100 ticks (5s): sync online ranks from kronos-ranks bridge
+    if state.tick_counter % 100 == 0 && !state.session.online_ids.is_empty() {
+        let keys: Vec<String> = state.session.online_ids.keys().cloned().collect();
+        storage::refresh_online_ranks_from_bridge(&mut state.store, keys.into_iter());
+    }
+
     // Every 600 ticks (30s): prune expired block log entries
     if state.tick_counter % 600 == 0 {
         inspector::prune_old_entries(&mut state.block_log, &state.config, &mut state.dirty_log, now);
@@ -755,5 +761,13 @@ mod tests {
         .unwrap();
         assert_eq!(rolled, 1);
         assert_eq!(inspector::undo_last_rollback(&mut session, "admin").unwrap(), 1);
+    }
+
+    #[test]
+    fn cyrillic_punishment_durations_parse_safely() {
+        assert_eq!(parse_duration_seconds("7д"), Ok(Some(7 * 86_400)));
+        assert_eq!(parse_duration_seconds("15м"), Ok(Some(900)));
+        assert_eq!(parse_duration_seconds("2ч"), Ok(Some(7200)));
+        assert_eq!(parse_duration_seconds("навсегда"), Ok(None));
     }
 }

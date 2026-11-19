@@ -72,6 +72,8 @@ pub struct RankProfile {
     pub max_shared_per_home: usize,
     pub warmup_seconds: u64,
     pub cooldown_seconds: u64,
+    #[serde(default)]
+    pub rtp_cooldown_seconds: Option<u64>,
     pub teleport_theme: String,
     pub can_set_spawn: bool,
     pub can_set_warp: bool,
@@ -98,19 +100,79 @@ pub struct EssentialsConfig {
 }
 
 impl EssentialsConfig {
+    pub fn find_rank(&self, rank_id: &str) -> Option<&RankProfile> {
+        self.ranks.iter().find(|r| r.id.eq_ignore_ascii_case(rank_id))
+    }
+
     pub fn rank_for(&self, rank_id: &str) -> RankProfile {
-        self.ranks
-            .iter()
-            .find(|r| r.id.eq_ignore_ascii_case(rank_id))
+        self.find_rank(rank_id)
             .cloned()
             .unwrap_or_else(|| self.ranks[0].clone())
     }
 
-    pub fn next_rank_after(&self, tier: u8) -> Option<&RankProfile> {
-        self.ranks
+    /// Merges primary (staff/donate) rank and purchased donate rank so staff never lose bought homes, themes, or cooldowns.
+    pub fn effective_rank_for(&self, player: &PlayerRecord) -> RankProfile {
+        let primary = self.rank_for(&player.rank);
+        let Some(ref donate_id) = player.donate_rank else {
+            return primary;
+        };
+        if donate_id.eq_ignore_ascii_case(&primary.id) {
+            return primary;
+        }
+        let donate = self.rank_for(donate_id);
+        let teleport_theme = if donate.tier > primary.tier {
+            donate.teleport_theme
+        } else {
+            primary.teleport_theme
+        };
+        let rtp_cd = match (primary.rtp_cooldown_seconds, donate.rtp_cooldown_seconds) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        RankProfile {
+            id: primary.id,
+            tier: primary.tier.max(donate.tier),
+            display_prefix: primary.display_prefix,
+            max_homes: primary.max_homes.max(donate.max_homes),
+            max_shared_per_home: primary.max_shared_per_home.max(donate.max_shared_per_home),
+            warmup_seconds: primary.warmup_seconds.min(donate.warmup_seconds),
+            cooldown_seconds: primary.cooldown_seconds.min(donate.cooldown_seconds),
+            rtp_cooldown_seconds: rtp_cd,
+            teleport_theme,
+            can_set_spawn: primary.can_set_spawn || donate.can_set_spawn,
+            can_set_warp: primary.can_set_warp || donate.can_set_warp,
+            can_back_on_death: primary.can_back_on_death || donate.can_back_on_death,
+            unlimited_homes: primary.unlimited_homes || donate.unlimited_homes,
+        }
+    }
+
+    /// Returns the next higher donate rank strictly above `current.max_homes` (never recommends staff ranks).
+    pub fn next_donate_after(&self, current: &RankProfile) -> Option<&RankProfile> {
+        if current.unlimited_homes {
+            return None;
+        }
+        const DONATE_ORDER: &[&str] = &[
+            "vip", "premium", "deluxe", "elite", "titan", "legend", "emperor", "overlord", "immortal", "kronos",
+        ];
+        DONATE_ORDER
             .iter()
-            .filter(|r| r.tier > tier)
-            .min_by_key(|r| r.tier)
+            .filter_map(|id| self.find_rank(id))
+            .find(|r| r.max_homes > current.max_homes)
+    }
+
+    /// Returns the lowest donate rank that unlocks the requested home slot index (0-based).
+    pub fn donate_unlock_for_slot(&self, home_index: usize) -> String {
+        const DONATE_ORDER: &[&str] = &[
+            "vip", "premium", "deluxe", "elite", "titan", "legend", "emperor", "overlord", "immortal", "kronos",
+        ];
+        DONATE_ORDER
+            .iter()
+            .filter_map(|id| self.find_rank(id))
+            .find(|r| r.max_homes > home_index)
+            .map(|r| r.display_prefix.trim().to_string())
+            .unwrap_or_else(|| "§6§l✦KRONOS✦".to_string())
     }
 
     pub fn rank_name_for_tier(&self, min_tier: u8) -> String {
@@ -118,7 +180,7 @@ impl EssentialsConfig {
             .iter()
             .find(|r| r.tier >= min_tier)
             .map(|r| r.display_prefix.trim().to_string())
-            .unwrap_or_else(|| "§c[ADMIN]".to_string())
+            .unwrap_or_else(|| "§6§l✦KRONOS✦".to_string())
     }
 }
 
@@ -127,6 +189,8 @@ pub struct PlayerRecord {
     pub player_id: String,
     pub username: String,
     pub rank: String,
+    #[serde(default)]
+    pub donate_rank: Option<String>,
     pub selected_theme: Option<String>,
     pub homes: Vec<HomePoint>,
     pub last_location: Option<Location>,
@@ -145,6 +209,7 @@ impl PlayerRecord {
             player_id: player_id.to_string(),
             username: username.to_string(),
             rank: "player".to_string(),
+            donate_rank: None,
             selected_theme: None,
             homes: Vec::new(),
             last_location: None,

@@ -16,7 +16,6 @@ const EMBEDDED_DEFAULT_CONFIG: &str = include_str!("../data/config.json");
 struct BridgeEntry {
     primary_rank: String,
     donate_rank: String,
-    max_regions: u32,
 }
 
 pub fn default_config() -> RegionsConfig {
@@ -24,19 +23,29 @@ pub fn default_config() -> RegionsConfig {
         .expect("embedded kronos-regions data/config.json must be valid")
 }
 
-/// Resolves player's effective rank from `kronos-ranks` cross-plugin bridge (respecting dual-track donate+staff).
-pub fn resolve_rank_from_bridge(config: &RegionsConfig, player_name: &str) -> Option<String> {
+/// Reads both `primary_rank` and `donate_rank` from `kronos-ranks` cross-plugin bridge.
+pub fn resolve_ranks_from_bridge(player_name: &str) -> Option<(String, String)> {
     let raw = fs::read_to_string(RANKS_BRIDGE_PATH).ok()?;
     let map = serde_json::from_str::<HashMap<String, BridgeEntry>>(&raw).ok()?;
     let entry = map.get(&player_name.trim().to_lowercase())?;
-    let primary_pol = config.rank_for(&entry.primary_rank);
-    let donate_pol = config.rank_for(&entry.donate_rank);
-    if primary_pol.bypass_protection || primary_pol.max_regions >= entry.max_regions {
-        Some(entry.primary_rank.clone())
-    } else if donate_pol.max_regions > primary_pol.max_regions {
-        Some(entry.donate_rank.clone())
-    } else {
-        Some(entry.primary_rank.clone())
+    Some((entry.primary_rank.clone(), entry.donate_rank.clone()))
+}
+
+/// Batch-syncs primary and donate ranks for online players from `kronos_ranks_bridge.json`.
+pub fn refresh_online_ranks_from_bridge(store: &mut RegionStore, online_ids: impl Iterator<Item = String>) {
+    let Ok(raw) = fs::read_to_string(RANKS_BRIDGE_PATH) else {
+        return;
+    };
+    let Ok(map) = serde_json::from_str::<HashMap<String, BridgeEntry>>(&raw) else {
+        return;
+    };
+    for pid in online_ids {
+        if let Some(name) = store.player_names.get(&pid).cloned() {
+            if let Some(entry) = map.get(&name.trim().to_lowercase()) {
+                store.player_ranks.insert(pid.clone(), entry.primary_rank.clone());
+                store.player_donate_ranks.insert(pid, entry.donate_rank.clone());
+            }
+        }
     }
 }
 

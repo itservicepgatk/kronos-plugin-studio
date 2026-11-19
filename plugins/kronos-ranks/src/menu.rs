@@ -236,6 +236,12 @@ pub fn open_player_profile(config: &RanksConfig, store: &RanksStore, viewer_id: 
             .unwrap_or_else(|| sid.clone()),
     };
 
+    let staff_exp = match (&prof.staff_rank, prof.staff_expires_at_ms) {
+        (None, _) => "§8—".into(),
+        (Some(_), None) => "§aПостоянная".into(),
+        (Some(_), Some(ms)) => format!("§e{}", format_duration_ru(ms.saturating_sub(now) / 1000)),
+    };
+
     let mut items = Vec::new();
     fill_border(&mut items, 4);
 
@@ -254,6 +260,7 @@ pub fn open_player_profile(config: &RanksConfig, store: &RanksStore, viewer_id: 
         material: "minecraft:beacon".into(),
         name: format!("§bСтафф-ветка: {}", staff_line),
         lore: vec![
+            format!("§7Срок должности: {}", staff_exp),
             format!("§7Активный префикс: {}", primary.prefix.trim()),
             format!("§7Итоговый вес: §e{}", primary.weight),
             "§7Обе ветки суммируют лучшие бонусы!".into(),

@@ -119,13 +119,16 @@ pub extern "C" fn on_tick() {
     // Every 5 seconds: expire temporary donate/staff ranks
     if state.tick_counter % 100 == 0 {
         let expired = hierarchy::expire_temp_ranks(&mut state.store, &mut state.dirty, now);
-        for (pkey, old_rank) in expired {
-            if let (Some(pid), Some(prof)) = (state.online_keys.get(&pkey), state.store.profiles.get(&pkey)) {
-                tab_chat::refresh_player_display(&state.config, pid, prof, state.online_keys.len().max(1));
-                host::send_chat(
-                    pid,
-                    &format!("§eСрок действия временного статуса §6{} §eистёк.", old_rank),
-                );
+        if !expired.is_empty() {
+            storage::export_bridge_snapshot(&state.config, &state.store);
+            for (pkey, old_rank) in expired {
+                if let (Some(pid), Some(prof)) = (state.online_keys.get(&pkey), state.store.profiles.get(&pkey)) {
+                    tab_chat::refresh_player_display(&state.config, pid, prof, state.online_keys.len().max(1));
+                    host::send_chat(
+                        pid,
+                        &format!("§eСрок действия временного статуса §6{} §eистёк.", old_rank),
+                    );
+                }
             }
         }
     }
@@ -345,5 +348,34 @@ mod tests {
         let expired = hierarchy::expire_temp_ranks(&mut store, &mut dirty, now + 61_000);
         assert_eq!(expired.len(), 1);
         assert_eq!(store.profiles.get("steve").unwrap().donate_rank, "player");
+    }
+
+    #[test]
+    fn cyrillic_durations_parse_without_utf8_panic() {
+        use crate::models::parse_duration_seconds;
+        assert_eq!(parse_duration_seconds("7д"), Ok(Some(7 * 86_400)));
+        assert_eq!(parse_duration_seconds("30м"), Ok(Some(30 * 60)));
+        assert_eq!(parse_duration_seconds("2ч"), Ok(Some(7200)));
+        assert_eq!(parse_duration_seconds("навсегда"), Ok(None));
+    }
+
+    #[test]
+    fn remove_rank_enforces_department_and_weight_boundaries() {
+        let cfg = storage::default_config();
+        let mut store = storage::load_store();
+        let mut dirty = false;
+        let now = 1_750_000_000_000;
+
+        hierarchy::assign_rank(&cfg, &mut store, &mut dirty, None, "CONSOLE", true, "SurvAdm", "survival_admin", None, now).unwrap();
+        hierarchy::assign_rank(&cfg, &mut store, &mut dirty, None, "CONSOLE", true, "HrBoss", "hr_curator", None, now).unwrap();
+        hierarchy::assign_rank(&cfg, &mut store, &mut dirty, None, "CONSOLE", true, "StMod", "stmoder", None, now).unwrap();
+        hierarchy::assign_rank(&cfg, &mut store, &mut dirty, None, "CONSOLE", true, "ModGuy", "moder", None, now).unwrap();
+
+        // Survival admin cannot fire HR curator (different dept & weight 420 > 300)
+        assert!(hierarchy::remove_rank_track(&cfg, &mut store, &mut dirty, Some("survadm"), "SurvAdm", false, "HrBoss", "staff", now).is_err());
+        // StModer (max_assignable 150) cannot demote Moder (weight 220)
+        assert!(hierarchy::remove_rank_track(&cfg, &mut store, &mut dirty, Some("stmod"), "StMod", false, "ModGuy", "staff", now).is_err());
+        // Invalid track name rejected
+        assert!(hierarchy::remove_rank_track(&cfg, &mut store, &mut dirty, None, "CONSOLE", true, "ModGuy", "invalid", now).is_err());
     }
 }

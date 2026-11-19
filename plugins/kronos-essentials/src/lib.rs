@@ -10,7 +10,7 @@ use models::{
     ActiveMeteorFall, CombatTag, EssentialsConfig, EssentialsStore, PendingTeleport, PlayerRecord,
     TpaRequest,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::slice;
 use std::str;
 use std::sync::Mutex;
@@ -18,6 +18,7 @@ use std::sync::Mutex;
 struct PluginState {
     config: EssentialsConfig,
     store: EssentialsStore,
+    online_players: HashSet<String>,
     pending_teleports: HashMap<String, PendingTeleport>,
     active_meteors: HashMap<String, ActiveMeteorFall>,
     tpa_requests: HashMap<String, TpaRequest>,
@@ -46,6 +47,7 @@ pub extern "C" fn init() -> i32 {
     *guard = Some(PluginState {
         config,
         store,
+        online_players: HashSet::new(),
         pending_teleports: HashMap::new(),
         active_meteors: HashMap::new(),
         tpa_requests: HashMap::new(),
@@ -83,6 +85,7 @@ pub extern "C" fn on_player_join(
 
     let mut guard = STATE.lock().unwrap();
     if let Some(ref mut state) = *guard {
+        state.online_players.insert(player_id.to_string());
         let entry = state
             .store
             .players
@@ -90,8 +93,9 @@ pub extern "C" fn on_player_join(
             .or_insert_with(|| PlayerRecord::new(player_id, name));
         if !name.is_empty() {
             entry.username = name.to_string();
-            if let Some(synced_rank) = storage::resolve_rank_from_bridge(&state.config, name) {
-                entry.rank = synced_rank;
+            if let Some((primary, donate)) = storage::resolve_ranks_from_bridge(name) {
+                entry.rank = primary;
+                entry.donate_rank = Some(donate);
             }
         }
 
@@ -102,7 +106,7 @@ pub extern "C" fn on_player_join(
             state.dirty = true;
         }
 
-        let rank = state.config.rank_for(&entry.rank);
+        let rank = state.config.effective_rank_for(entry);
         let limit = if rank.unlimited_homes {
             "∞".to_string()
         } else {
@@ -140,6 +144,7 @@ pub extern "C" fn on_player_leave(player_id_ptr: *const u8, player_id_len: usize
     let player_id = read_str(player_id_ptr, player_id_len);
     let mut guard = STATE.lock().unwrap();
     if let Some(ref mut state) = *guard {
+        state.online_players.remove(player_id);
         state.pending_teleports.remove(player_id);
         state.active_meteors.remove(player_id);
         state.tpa_requests.remove(player_id);
@@ -250,6 +255,12 @@ pub extern "C" fn on_tick() {
             true
         });
 
+        // Every 5 seconds (100 ticks): live-sync dual-track ranks from kronos-ranks bridge
+        if state.tick_counter % 100 == 0 && !state.online_players.is_empty() {
+            let online: Vec<String> = state.online_players.iter().cloned().collect();
+            storage::refresh_online_ranks_from_bridge(&mut state.store, online.into_iter());
+        }
+
         // Debounced atomic autosave
         let interval_ms = state.config.autosave_interval_seconds.max(5) * 1000;
         if state.dirty && now.saturating_sub(state.last_autosave_ms) >= interval_ms {
@@ -317,7 +328,7 @@ pub extern "C" fn on_player_death(player_id_ptr: *const u8, player_id_len: usize
         entry.last_death_location = Some(death_loc);
         state.dirty = true;
 
-        let rank = state.config.rank_for(&entry.rank);
+        let rank = state.config.effective_rank_for(entry);
         if rank.can_back_on_death {
             host::send_chat(player_id, "§e☠ Точка смерти сохранена! Вернитесь командой §a/back");
         }
@@ -438,5 +449,22 @@ mod tests {
         );
         assert_eq!(commands::remaining_combat_seconds(&tags, "steve", 7_500), 3);
         assert_eq!(commands::remaining_combat_seconds(&tags, "steve", 10_500), 0);
+    }
+
+    #[test]
+    fn dual_track_staff_preserves_kronos_homes_and_per_rank_rtp_cooldowns() {
+        let cfg = storage::default_config();
+        let mut rec = PlayerRecord::new("uuid-1", "Alex");
+        rec.rank = "trainee".into();
+        rec.donate_rank = Some("kronos".into());
+
+        let eff = cfg.effective_rank_for(&rec);
+        assert_eq!(eff.max_homes, 50);
+        assert_eq!(eff.warmup_seconds, 0);
+        assert_eq!(eff.rtp_cooldown_seconds, Some(0));
+        assert_eq!(eff.tier, 4);
+        assert_eq!(cfg.rank_for("legend").rtp_cooldown_seconds, Some(45));
+        assert_eq!(cfg.next_donate_after(&cfg.rank_for("premium")).unwrap().id, "deluxe");
+        assert!(cfg.next_donate_after(&cfg.rank_for("kronos")).is_none());
     }
 }

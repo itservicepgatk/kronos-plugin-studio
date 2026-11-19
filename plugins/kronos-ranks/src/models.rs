@@ -214,17 +214,21 @@ pub fn parse_duration_seconds(input: &str) -> Result<Option<u64>, ()> {
         let v: u64 = num.parse().map_err(|_| ())?;
         return if v > 0 { Ok(Some(v.saturating_mul(2_592_000))) } else { Err(()) };
     }
-    let (num_part, unit) = raw.split_at(raw.len() - 1);
+    let mut chars = raw.chars();
+    let Some(unit) = chars.next_back() else {
+        return Err(());
+    };
+    let num_part = chars.as_str();
     let value: u64 = num_part.parse().map_err(|_| ())?;
     if value == 0 {
         return Err(());
     }
     let mult: u64 = match unit {
-        "s" | "с" => 1,
-        "m" | "м" => 60,
-        "h" | "ч" => 3600,
-        "d" | "д" => 86_400,
-        "w" | "н" => 604_800,
+        's' | 'с' => 1,
+        'm' | 'м' => 60,
+        'h' | 'ч' => 3600,
+        'd' | 'д' => 86_400,
+        'w' | 'н' => 604_800,
         _ => return Err(()),
     };
     Ok(Some(value.saturating_mul(mult)))

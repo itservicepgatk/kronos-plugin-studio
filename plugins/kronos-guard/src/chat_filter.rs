@@ -4,6 +4,7 @@ use crate::models::{
     RuntimeSession,
 };
 use crate::punishments::{active_mute, issue_punishment, normalize_key, notify_staff};
+use crate::storage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatDecision {
@@ -46,7 +47,7 @@ pub fn evaluate_chat(
         return ChatDecision::Allow;
     }
 
-    let rank = host::get_player_rank(player_id);
+    let rank = storage::effective_rank(store, player_id);
     if config.perms_for(&rank).bypass_chat_filter {
         return ChatDecision::Allow;
     }

@@ -76,7 +76,7 @@ pub fn schedule_teleport(
         .players
         .entry(player_id.to_string())
         .or_insert_with(|| PlayerRecord::new(player_id, player_id));
-    let rank = config.rank_for(&player.rank);
+    let rank = config.effective_rank_for(player);
 
     // 3. Cooldown check
     let cooldown_ms = rank.cooldown_seconds * 1000;
@@ -154,12 +154,11 @@ pub fn trigger_rtp(
         .players
         .entry(player_id.to_string())
         .or_insert_with(|| PlayerRecord::new(player_id, player_id));
-    let rank = config.rank_for(&player.rank);
-    let rtp_cd_ms = if rank.warmup_seconds == 0 {
-        0
-    } else {
-        config.rtp.cooldown_seconds * 1000
-    };
+    let rank = config.effective_rank_for(player);
+    let rtp_cd_ms = rank
+        .rtp_cooldown_seconds
+        .unwrap_or(config.rtp.cooldown_seconds)
+        .saturating_mul(1000);
     let since_rtp = now.saturating_sub(player.last_rtp_ms);
     if rtp_cd_ms > 0 && player.last_rtp_ms > 0 && since_rtp < rtp_cd_ms {
         let wait = ((rtp_cd_ms - since_rtp) + 999) / 1000;
@@ -237,7 +236,7 @@ pub fn handle_command(
         }
 
         "/setspawn" => {
-            let rank = config.rank_for(&store.players[player_id].rank);
+            let rank = config.effective_rank_for(&store.players[player_id]);
             if !rank.can_set_spawn {
                 host::send_chat(player_id, "§c✖ Недостаточно прав для установки спавна.");
                 return true;
@@ -262,7 +261,7 @@ pub fn handle_command(
                 return true;
             }
 
-            let rank = config.rank_for(&store.players[player_id].rank);
+            let rank = config.effective_rank_for(&store.players[player_id]);
             let loc = host::get_player_location(player_id);
             let requested_icon = parts.get(2).copied().map(|s| {
                 if s.contains(':') { s.to_string() } else { format!("minecraft:{}", s) }
@@ -281,8 +280,8 @@ pub fn handle_command(
             } else {
                 if !rank.unlimited_homes && player.homes.len() >= rank.max_homes {
                     let next_info = config
-                        .next_rank_after(rank.tier)
-                        .map(|n| format!(" (ранг {} даёт {} меток!)", n.display_prefix.trim(), n.max_homes))
+                        .next_donate_after(&rank)
+                        .map(|n| format!(" (донат {} даёт {} меток!)", n.display_prefix.trim(), n.max_homes))
                         .unwrap_or_default();
                     host::send_chat(
                         player_id,
@@ -339,7 +338,7 @@ pub fn handle_command(
                     }
                     let home_name = parts[2].to_lowercase();
                     let friend = parts[3].to_string();
-                    let rank = config.rank_for(&store.players[player_id].rank);
+                    let rank = config.effective_rank_for(&store.players[player_id]);
                     let player = store.players.get_mut(player_id).unwrap();
                     if let Some(home) = player.homes.iter_mut().find(|h| h.name == home_name) {
                         if home.shared_with.iter().any(|u| u.eq_ignore_ascii_case(&friend)) {
@@ -499,7 +498,7 @@ pub fn handle_command(
             };
             let key = name.to_lowercase();
             if let Some(warp) = store.warps.get(&key).cloned() {
-                let rank = config.rank_for(&store.players[player_id].rank);
+                let rank = config.effective_rank_for(&store.players[player_id]);
                 if rank.tier < warp.min_tier {
                     host::send_chat(player_id, &format!("§c🔒 Варп доступен с ранга {}", config.rank_name_for_tier(warp.min_tier)));
                     return true;
@@ -512,7 +511,7 @@ pub fn handle_command(
         }
 
         "/setwarp" => {
-            let rank = config.rank_for(&store.players[player_id].rank);
+            let rank = config.effective_rank_for(&store.players[player_id]);
             if !rank.can_set_warp {
                 host::send_chat(player_id, "§c✖ Недостаточно прав для создания варпа.");
                 return true;
@@ -540,7 +539,7 @@ pub fn handle_command(
         }
 
         "/delwarp" => {
-            let rank = config.rank_for(&store.players[player_id].rank);
+            let rank = config.effective_rank_for(&store.players[player_id]);
             if !rank.can_set_warp {
                 host::send_chat(player_id, "§c✖ Недостаточно прав.");
                 return true;
@@ -559,7 +558,7 @@ pub fn handle_command(
         }
 
         "/back" => {
-            let rank = config.rank_for(&store.players[player_id].rank);
+            let rank = config.effective_rank_for(&store.players[player_id]);
             let player = &store.players[player_id];
             if rank.can_back_on_death {
                 if let Some(death_loc) = player.last_death_location.clone() {
@@ -653,7 +652,7 @@ pub fn handle_command(
                 menu::open_effects_menu(store, config, player_id);
                 return true;
             };
-            let rank = config.rank_for(&store.players[player_id].rank);
+            let rank = config.effective_rank_for(&store.players[player_id]);
             let spec = find_theme(theme_arg);
             if !spec.id.eq_ignore_ascii_case(theme_arg) {
                 host::send_chat(player_id, "§c✖ Неизвестная тема. Откройте каталог: §f/tpeffect");
@@ -674,32 +673,40 @@ pub fn handle_command(
             true
         }
 
-        "/setrank" => {
-            let caller_rank = config.rank_for(&store.players[player_id].rank);
+        "/esrank" => {
+            let caller_rank = config.effective_rank_for(&store.players[player_id]);
             if !caller_rank.can_set_spawn {
-                host::send_chat(player_id, "§c✖ Только администратор может менять статусы.");
+                host::send_chat(player_id, "§c✖ Только старший администратор может менять статусы.");
                 return true;
             }
             if parts.len() < 3 {
-                host::send_chat(player_id, "§eИспользование: §f/setrank <игрок> <player|vip|premium|legend|admin|owner>");
+                host::send_chat(player_id, "§eИспользование: §f/esrank <игрок> <ранг из 20> §7(основная команда: /rank set)");
                 return true;
             }
-            let target_id = parts[1];
-            let new_profile = config.rank_for(parts[2]);
+            let Some(new_profile) = config.find_rank(parts[2]).cloned() else {
+                host::send_chat(player_id, &format!("§c✖ Неизвестный ранг §e{}§c. Список: §f/rank list", parts[2]));
+                return true;
+            };
+            let target_id = store
+                .players
+                .iter()
+                .find(|(_, rec)| rec.username.eq_ignore_ascii_case(parts[1]))
+                .map(|(pid, _)| pid.clone())
+                .unwrap_or_else(|| parts[1].to_string());
             let target_player = store
                 .players
-                .entry(target_id.to_string())
-                .or_insert_with(|| PlayerRecord::new(target_id, target_id));
+                .entry(target_id.clone())
+                .or_insert_with(|| PlayerRecord::new(&target_id, parts[1]));
             target_player.rank = new_profile.id.clone();
             *dirty = true;
 
             let limit_txt = if new_profile.unlimited_homes { "∞".to_string() } else { new_profile.max_homes.to_string() };
             host::send_chat(
                 player_id,
-                &format!("§a✔ Игроку §e{} §aвыдан статус {}§a(лимит домов: §e{}§a)", target_id, new_profile.display_prefix, limit_txt),
+                &format!("§a✔ Игроку §e{} §aвыдан статус {}§a(лимит домов: §e{}§a)", parts[1], new_profile.display_prefix, limit_txt),
             );
             host::send_chat(
-                target_id,
+                &target_id,
                 &format!("§6✦ §fВаш статус обновлён до {}§f! Новый лимит домов: §e{}", new_profile.display_prefix, limit_txt),
             );
             true

@@ -9,6 +9,7 @@ use crate::punishments::{
     active_warn_count, check_hierarchy, issue_punishment, normalize_key, notify_staff,
     revoke_punishment,
 };
+use crate::storage;
 use std::collections::VecDeque;
 
 pub fn toggle_vanish(
@@ -17,7 +18,7 @@ pub fn toggle_vanish(
     session: &mut RuntimeSession,
     player_id: &str,
 ) {
-    let rank = host::get_player_rank(player_id);
+    let rank = storage::effective_rank(store, player_id);
     let perms = config.perms_for(&rank);
     if !perms.can_vanish {
         host::send_chat(player_id, "§c✗ Ваниш доступен с ранга §9Модер§c.");
@@ -65,12 +66,13 @@ pub fn toggle_vanish(
 
 pub fn toggle_inspector(
     config: &GuardConfig,
+    store: &GuardStore,
     session: &mut RuntimeSession,
     player_id: &str,
 ) {
-    let rank = host::get_player_rank(player_id);
+    let rank = storage::effective_rank(store, player_id);
     if !config.perms_for(&rank).can_inspect {
-        host::send_chat(player_id, "§c✗ Инспектор блоков доступен с ранга §aХелпер§c.");
+        host::send_chat(player_id, "§c✗ Инспектор блоков доступен с ранга §eСтажёр§c.");
         return;
     }
 
@@ -100,7 +102,7 @@ pub fn toggle_freeze(
     staff_id: &str,
     target_name: &str,
 ) {
-    let staff_rank = host::get_player_rank(staff_id);
+    let staff_rank = storage::effective_rank(store, staff_id);
     if !config.perms_for(&staff_rank).can_freeze {
         host::send_chat(staff_id, "§c✗ Заморозка доступна с ранга §9Модер§c.");
         return;
@@ -168,7 +170,7 @@ pub fn handle_command(
     }
 
     let cmd = parts[0].trim_start_matches('/').to_lowercase();
-    let staff_rank = host::get_player_rank(player_id);
+    let staff_rank = storage::effective_rank(store, player_id);
     let staff_name = store
         .known_names
         .get(player_id)
@@ -539,7 +541,7 @@ fn handle_guard_subcommand(
     }
 
     match args[0].to_lowercase().as_str() {
-        "i" | "inspect" => toggle_inspector(config, session, player_id),
+        "i" | "inspect" => toggle_inspector(config, store, session, player_id),
         "player" | "p" => {
             if args.len() < 2 {
                 host::send_chat(player_id, "§eИспользование: /guard player <игрок>");

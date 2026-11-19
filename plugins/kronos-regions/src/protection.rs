@@ -73,7 +73,7 @@ pub fn find_overlap<'a>(
 }
 
 pub fn has_bypass(store: &RegionStore, config: &RegionsConfig, player_id: &str) -> bool {
-    config.rank_for(store.rank_id_of(player_id)).bypass_protection
+    config.effective_rank_for(store, player_id).bypass_protection
 }
 
 /// Checks if a player may break or place a block at (world, x, y, z).

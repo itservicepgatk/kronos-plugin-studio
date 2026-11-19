@@ -268,24 +268,56 @@ pub fn remove_rank_track(
     let actor_prof = actor_key.and_then(|k| store.profiles.get(k)).cloned();
     let target_existing = store.profiles.get(&target_key).cloned();
 
+    let is_donate = if track.eq_ignore_ascii_case("donate") {
+        true
+    } else if track.eq_ignore_ascii_case("staff") {
+        false
+    } else {
+        return Err("§c✗ Укажите ветку: §fstaff §cили §fdonate§c.".into());
+    };
+
     if !actor_is_console {
         let Some(ref actor) = actor_prof else {
             return Err("§c✗ Недостаточно прав.".into());
         };
         let actor_rank = primary_rank(config, actor);
-        if actor_rank.id != "owner" {
+        if actor_rank.id != "owner" && !has_permission(config, actor, "*") {
             if let Some(ref t) = target_existing {
                 if primary_rank(config, t).weight >= actor_rank.weight {
                     return Err("§c✗ Нельзя снять ранг у сотрудника выше или равного вам.".into());
                 }
             }
-            if track.eq_ignore_ascii_case("donate")
-                && !has_permission(config, actor, "kronos.ranks.grant.donate")
-            {
-                return Err("§c✗ Снимать донат-ранги может только Гл.Куратор или Владелец.".into());
-            }
-            if track.eq_ignore_ascii_case("staff") && actor_rank.max_assignable_weight == 0 {
-                return Err("§c✗ У вашего отдела нет прав на снятие должностей стаффа.".into());
+            if is_donate {
+                if !has_permission(config, actor, "kronos.ranks.grant.donate") {
+                    return Err("§c✗ Снимать донат-ранги может только Гл.Куратор или Владелец.".into());
+                }
+            } else {
+                if actor_rank.max_assignable_weight == 0 {
+                    return Err("§c✗ У вашего отдела нет прав на снятие должностей стаффа.".into());
+                }
+                if let Some(ref t) = target_existing {
+                    if let Some(ref staff_id) = t.staff_rank {
+                        if let Some(staff_def) = config.find(staff_id) {
+                            if staff_def.weight > actor_rank.max_assignable_weight {
+                                return Err(format!(
+                                    "§c✗ Ваш отдел может снимать должности до веса §e{}§c (у §f{}§c вес §e{}§c).",
+                                    actor_rank.max_assignable_weight, staff_def.display_name, staff_def.weight
+                                ));
+                            }
+                            let dept_code = staff_def.department.code();
+                            let dept_allowed = actor_rank
+                                .assignable_departments
+                                .iter()
+                                .any(|d| d.eq_ignore_ascii_case(dept_code));
+                            if !dept_allowed {
+                                return Err(format!(
+                                    "§c✗ Вы не можете снимать сотрудников из отдела {}.",
+                                    staff_def.department.label_ru()
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -295,7 +327,7 @@ pub fn remove_rank_track(
         .entry(target_key)
         .or_insert_with(|| PlayerRankProfile::new(target_name, now_ms));
 
-    let removed_id = if track.eq_ignore_ascii_case("donate") {
+    let removed_id = if is_donate {
         let old = profile.donate_rank.clone();
         profile.donate_rank = "player".into();
         profile.donate_expires_at_ms = None;
@@ -319,6 +351,9 @@ pub fn remove_rank_track(
         duration_label: "-".into(),
         ts_ms: now_ms,
     });
+    if store.audit_log.len() > 500 {
+        store.audit_log.remove(0);
+    }
     *dirty = true;
     Ok(snapshot)
 }

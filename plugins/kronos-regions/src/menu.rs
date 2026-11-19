@@ -23,7 +23,7 @@ pub fn open_regions_hub(
     selections: &HashMap<String, WandSelection>,
     player_id: &str,
 ) {
-    let rank = config.rank_for(store.rank_id_of(player_id));
+    let rank = config.effective_rank_for(store, player_id);
     let owned_count = store.owned_count(player_id);
     let limit_txt = if rank.unlimited_regions { "∞".to_string() } else { rank.max_regions.to_string() };
 
@@ -44,9 +44,9 @@ pub fn open_regions_hub(
     }
 
     // Status Card (slot 4)
-    let next_rank_hint = match config.next_rank_after(rank.tier) {
+    let next_rank_hint = match config.next_donate_after(&rank) {
         Some(next) if !rank.unlimited_regions => format!(
-            "§7Следующий ранг {}: §e{} приватов §7(до §e{} §7бл.)",
+            "§7Следующий донат {}: §e{} приватов §7(до §e{} §7бл.)",
             next.display_prefix.trim(),
             next.max_regions,
             next.max_volume
@@ -120,12 +120,7 @@ pub fn open_regions_hub(
                 enchanted: false,
             });
         } else {
-            let unlock = config
-                .ranks
-                .iter()
-                .find(|r| r.unlimited_regions || r.max_regions > idx)
-                .map(|r| r.display_prefix.trim().to_string())
-                .unwrap_or_else(|| "§d[LEGEND]".to_string());
+            let unlock = config.donate_unlock_for_slot(idx);
             slots.push(MenuSlot {
                 slot: slot_num,
                 item: "minecraft:gray_stained_glass_pane".to_string(),
@@ -321,7 +316,7 @@ pub fn open_flags_menu(store: &RegionStore, config: &RegionsConfig, player_id: &
     let Some(rg) = store.regions.get(rg_id) else {
         return;
     };
-    let rank = config.rank_for(store.rank_id_of(player_id));
+    let rank = config.effective_rank_for(store, player_id);
     let f = &rg.flags;
 
     let make_flag = |slot: u8, item: &str, title: &str, enabled: bool, unlocked: bool, lock_hint: &str, desc: &str| {
@@ -382,7 +377,7 @@ pub fn open_expand_menu(store: &RegionStore, config: &RegionsConfig, player_id: 
     let Some(rg) = store.regions.get(rg_id) else {
         return;
     };
-    let rank = config.rank_for(store.rank_id_of(player_id));
+    let rank = config.effective_rank_for(store, player_id);
     let (dx, dy, dz) = rg.bounds.dimensions();
 
     let dir_btn = |slot: u8, item: &str, title: &str, extra: &str| MenuSlot {
@@ -505,7 +500,7 @@ pub fn open_themes_menu(store: &RegionStore, config: &RegionsConfig, player_id: 
     let Some(rg) = store.regions.get(rg_id) else {
         return;
     };
-    let rank = config.rank_for(store.rank_id_of(player_id));
+    let rank = config.effective_rank_for(store, player_id);
     let theme_slots: [u8; 5] = [11, 12, 13, 14, 15];
 
     let mut slots: Vec<MenuSlot> = Vec::new();
@@ -708,7 +703,7 @@ pub fn handle_menu_click(
             open_region_manage(ctx.store, player_id, rg_id);
             return true;
         }
-        let rank = ctx.config.rank_for(ctx.store.rank_id_of(player_id));
+        let rank = ctx.config.effective_rank_for(ctx.store, player_id);
         if let Some(rg) = ctx.store.regions.get_mut(rg_id) {
             if !rg.is_officer_or_owner(player_id) && !rank.bypass_protection {
                 host::send_chat(player_id, "§c✖ Только владелец или офицер может менять флаги.");
@@ -811,7 +806,7 @@ pub fn handle_menu_click(
         let theme_slots: [u8; 5] = [11, 12, 13, 14, 15];
         if let Some(idx) = theme_slots.iter().position(|&s| s == slot) {
             let theme = &BORDER_THEMES[idx];
-            let rank = ctx.config.rank_for(ctx.store.rank_id_of(player_id));
+            let rank = ctx.config.effective_rank_for(ctx.store, player_id);
             if !visualizer::can_use_border_theme(rank.tier, theme.id) {
                 host::send_chat(
                     player_id,
@@ -834,7 +829,7 @@ pub fn handle_menu_click(
         match slot {
             11 => {
                 if let Some(rg) = ctx.store.regions.get(rg_id) {
-                    let rank = ctx.config.rank_for(ctx.store.rank_id_of(player_id));
+                    let rank = ctx.config.effective_rank_for(ctx.store, player_id);
                     if rg.is_owner(player_id) || rank.bypass_protection {
                         let name = rg.name.clone();
                         ctx.store.regions.remove(rg_id);

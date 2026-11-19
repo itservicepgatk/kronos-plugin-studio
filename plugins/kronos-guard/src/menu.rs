@@ -5,6 +5,7 @@ use crate::models::{
     PunishmentKind, RuntimeSession,
 };
 use crate::punishments::{issue_punishment, normalize_key, revoke_punishment};
+use crate::storage;
 use serde::Serialize;
 use std::collections::VecDeque;
 
@@ -496,10 +497,10 @@ pub fn handle_menu_click(
     slot: u8,
     click_type: &str,
     toggle_vanish: fn(&GuardConfig, &GuardStore, &mut RuntimeSession, &str),
-    toggle_inspector: fn(&GuardConfig, &mut RuntimeSession, &str),
+    toggle_inspector: fn(&GuardConfig, &GuardStore, &mut RuntimeSession, &str),
     toggle_freeze: fn(&GuardConfig, &GuardStore, &mut RuntimeSession, &str, &str),
 ) -> bool {
-    let staff_rank = host::get_player_rank(staff_id);
+    let staff_rank = storage::effective_rank(store, staff_id);
     let staff_name = store
         .known_names
         .get(staff_id)
@@ -522,7 +523,7 @@ pub fn handle_menu_click(
                         open_blocklog_menu(block_log, staff_id, &pos.world, pos.x, pos.y, pos.z);
                     }
                 } else {
-                    toggle_inspector(config, session, staff_id);
+                    toggle_inspector(config, store, session, staff_id);
                     open_guard_hub(store, block_log, config, session, staff_id);
                 }
             }

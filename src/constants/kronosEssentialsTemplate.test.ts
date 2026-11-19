@@ -84,9 +84,10 @@ test('KRONOS Essentials v2 exports lifecycle hooks, 5 GUIs, RTP, shared homes, a
   }
   assert.ok(lib.includes('#[cfg(test)]'), 'Missing built-in Rust unit tests');
 
-  for (const cmd of ['/spawn', '/setspawn', '/sethome', '/home', '/homes', '/delhome', '/rtp', '/back', '/tpa', '/warp', '/tpeffect', '/setrank']) {
+  for (const cmd of ['/spawn', '/setspawn', '/sethome', '/home', '/homes', '/delhome', '/rtp', '/back', '/tpa', '/warp', '/tpeffect', '/esrank']) {
     assert.ok(commands.includes(`"${cmd}"`), `Missing command ${cmd}`);
   }
+  assert.ok(!commands.includes('"/setrank"'), 'Essentials must not hijack /setrank from kronos-ranks');
   assert.ok(commands.includes('"share"') && commands.includes('"unshare"') && commands.includes('"fav"'));
 
   for (const menuId of ['kronos_homes:', 'kronos_confirm_delete:', 'kronos_home_edit:', 'kronos_effects', 'kronos_tpa', 'kronos_warps']) {

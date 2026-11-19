@@ -36,6 +36,41 @@ pub fn resolve_rank_from_bridge(player_name: &str) -> Option<String> {
         .map(|e| e.primary_rank.clone())
 }
 
+/// Resolves player's active rank prioritizing `kronos-ranks` bridge -> cached `known_ranks` -> host rank.
+pub fn effective_rank(store: &GuardStore, player_id: &str) -> String {
+    if player_id == "CONSOLE" {
+        return "owner".into();
+    }
+    let name = store
+        .known_names
+        .get(player_id)
+        .map(|s| s.as_str())
+        .unwrap_or(player_id);
+    if let Some(bridge_rank) = resolve_rank_from_bridge(name) {
+        return bridge_rank;
+    }
+    let key = name.trim().to_lowercase();
+    if let Some(cached) = store.known_ranks.get(&key) {
+        return cached.clone();
+    }
+    host::get_player_rank(player_id)
+}
+
+/// Refreshes cached `known_ranks` for all online players from `kronos-ranks` bridge in a single file read.
+pub fn refresh_online_ranks_from_bridge(store: &mut GuardStore, online_keys: impl Iterator<Item = String>) {
+    let Some(raw) = host::read_file(RANKS_BRIDGE_PATH) else {
+        return;
+    };
+    let Ok(map) = serde_json::from_str::<HashMap<String, BridgeEntry>>(&raw) else {
+        return;
+    };
+    for key in online_keys {
+        if let Some(entry) = map.get(&key) {
+            store.known_ranks.insert(key, entry.primary_rank.clone());
+        }
+    }
+}
+
 pub fn load_store() -> GuardStore {
     if let Some(raw) = host::read_file(STORE_PATH) {
         if let Ok(mut store) = serde_json::from_str::<GuardStore>(&raw) {

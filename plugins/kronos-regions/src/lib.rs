@@ -80,8 +80,9 @@ pub extern "C" fn on_player_join(
     if let Some(ref mut state) = *guard {
         if !name.is_empty() {
             state.store.player_names.insert(player_id.to_string(), name.to_string());
-            if let Some(synced_rank) = storage::resolve_rank_from_bridge(&state.config, name) {
-                state.store.player_ranks.insert(player_id.to_string(), synced_rank);
+            if let Some((primary, donate)) = storage::resolve_ranks_from_bridge(name) {
+                state.store.player_ranks.insert(player_id.to_string(), primary);
+                state.store.player_donate_ranks.insert(player_id.to_string(), donate);
             }
         }
         state.last_player_region.insert(player_id.to_string(), None);
@@ -144,6 +145,12 @@ pub extern "C" fn on_tick() {
                 }
             }
         }
+    }
+
+    // 2.5 Every 100 ticks (5s): live-sync dual-track ranks from kronos-ranks bridge
+    if state.tick_counter % 100 == 0 && !state.last_player_region.is_empty() {
+        let online_ids: Vec<String> = state.last_player_region.keys().cloned().collect();
+        storage::refresh_online_ranks_from_bridge(&mut state.store, online_ids.into_iter());
     }
 
     // 3. Debounced atomic autosave every 30s
@@ -449,5 +456,23 @@ mod tests {
         assert!(!visualizer::can_use_border_theme(0, "golden_beam"));
         assert!(visualizer::can_use_border_theme(1, "golden_beam"));
         assert!(visualizer::can_use_border_theme(3, "dragon_aurora"));
+    }
+
+    #[test]
+    fn dual_track_staff_keeps_bought_kronos_region_limits_and_bypass() {
+        let cfg = storage::default_config();
+        let mut store = RegionStore::default();
+        store.player_ranks.insert("uuid-1".into(), "stmoder".into());
+        store.player_donate_ranks.insert("uuid-1".into(), "kronos".into());
+
+        let eff = cfg.effective_rank_for(&store, "uuid-1");
+        assert!(eff.bypass_protection);
+        assert_eq!(eff.max_regions, 30);
+        assert_eq!(eff.max_volume, 3_500_000);
+        assert_eq!(eff.tier, 4);
+        // Donate upgrade hint for premium should point to deluxe, not skip to titan
+        assert_eq!(cfg.next_donate_after(&cfg.rank_for("premium")).unwrap().id, "deluxe");
+        // Kronos donator should not be advised to buy staff rank
+        assert!(cfg.next_donate_after(&cfg.rank_for("kronos")).is_none());
     }
 }

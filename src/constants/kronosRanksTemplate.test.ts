@@ -135,3 +135,115 @@ test('KRONOS Ranks exports WASM hooks, cross-plugin FFI queries, 5 GUIs, command
     assert.ok(menu.includes(menuId), `Missing Chest GUI in kronos-ranks menu.rs: ${menuId}`);
   }
 });
+
+test('Cross-plugin rank audit: exact numeric parity across all 20 ranks, dual-track merge, UTF-8 safety, and security guards', () => {
+  const ranksCfg = JSON.parse(KRONOS_RANKS_TEMPLATE.files['data/config.json']) as {
+    ranks: Array<{
+      id: string;
+      weight: number;
+      perks: {
+        max_homes: number;
+        max_regions: number;
+        max_region_volume: number;
+        tp_warmup_seconds: number;
+        rtp_cooldown_seconds: number;
+        border_tier: number;
+      };
+    }>;
+  };
+  const guardCfg = JSON.parse(KRONOS_GUARD_TEMPLATE.files['data/config.json']) as {
+    staff_ranks: Record<string, { weight: number }>;
+  };
+  const regionsCfg = JSON.parse(KRONOS_REGIONS_TEMPLATE.files['data/config.json']) as {
+    ranks: Array<{ id: string; tier: number; max_regions: number; max_volume: number }>;
+  };
+  const essentialsCfg = JSON.parse(KRONOS_ESSENTIALS_TEMPLATE.files['data/config.json']) as {
+    ranks: Array<{
+      id: string;
+      max_homes: number;
+      warmup_seconds: number;
+      rtp_cooldown_seconds: number;
+    }>;
+  };
+
+  const regionsById = Object.fromEntries(regionsCfg.ranks.map((r) => [r.id, r]));
+  const essentialsById = Object.fromEntries(essentialsCfg.ranks.map((r) => [r.id, r]));
+
+  for (const rank of ranksCfg.ranks) {
+    assert.equal(
+      guardCfg.staff_ranks[rank.id].weight,
+      rank.weight,
+      `Weight mismatch in kronos-guard for ${rank.id}`,
+    );
+    assert.equal(
+      regionsById[rank.id].max_regions,
+      rank.perks.max_regions,
+      `max_regions mismatch in kronos-regions for ${rank.id}`,
+    );
+    assert.equal(
+      regionsById[rank.id].max_volume,
+      rank.perks.max_region_volume,
+      `max_region_volume mismatch in kronos-regions for ${rank.id}`,
+    );
+    assert.ok(
+      rank.perks.border_tier <= regionsById[rank.id].tier,
+      `border_tier (${rank.perks.border_tier}) exceeds kronos-regions tier (${regionsById[rank.id].tier}) for ${rank.id}`,
+    );
+    assert.equal(
+      essentialsById[rank.id].max_homes,
+      rank.perks.max_homes,
+      `max_homes mismatch in kronos-essentials for ${rank.id}`,
+    );
+    assert.equal(
+      essentialsById[rank.id].warmup_seconds,
+      rank.perks.tp_warmup_seconds,
+      `warmup_seconds mismatch in kronos-essentials for ${rank.id}`,
+    );
+    assert.equal(
+      essentialsById[rank.id].rtp_cooldown_seconds,
+      rank.perks.rtp_cooldown_seconds,
+      `rtp_cooldown_seconds mismatch in kronos-essentials for ${rank.id}`,
+    );
+  }
+
+  // Disk parity for regions & essentials templates as well
+  for (const [dir, tpl] of [
+    ['plugins/kronos-regions', KRONOS_REGIONS_TEMPLATE],
+    ['plugins/kronos-essentials', KRONOS_ESSENTIALS_TEMPLATE],
+  ] as const) {
+    for (const [rel, content] of Object.entries(tpl.files)) {
+      const disk = fs.readFileSync(path.join(path.resolve(dir), rel), 'utf8');
+      assert.equal(content, disk, `Template drift in ${dir}/${rel}`);
+    }
+  }
+
+  // UTF-8 duration parser safety (no byte-index split_at on Cyrillic duration suffix)
+  assert.ok(!KRONOS_RANKS_TEMPLATE.files['src/models.rs'].includes('split_at(raw.len()'));
+  assert.ok(!KRONOS_GUARD_TEMPLATE.files['src/models.rs'].includes('split_at(raw.len()'));
+
+  // Security guards in kronos-ranks
+  assert.ok(KRONOS_RANKS_TEMPLATE.files['src/commands.rs'].includes('kronos.ranks.'));
+  assert.ok(KRONOS_RANKS_TEMPLATE.files['src/hierarchy.rs'].includes('assignable_departments'));
+
+  // Bridge-aware rank resolution across guard & dual-track merge across regions/essentials
+  assert.ok(KRONOS_GUARD_TEMPLATE.files['src/commands.rs'].includes('storage::effective_rank'));
+  assert.ok(KRONOS_GUARD_TEMPLATE.files['src/chat_filter.rs'].includes('storage::effective_rank'));
+  assert.ok(KRONOS_GUARD_TEMPLATE.files['src/menu.rs'].includes('storage::effective_rank'));
+  assert.ok(KRONOS_REGIONS_TEMPLATE.files['src/models.rs'].includes('effective_rank_for'));
+  assert.ok(KRONOS_REGIONS_TEMPLATE.files['src/models.rs'].includes('next_donate_after'));
+  assert.ok(KRONOS_ESSENTIALS_TEMPLATE.files['src/models.rs'].includes('effective_rank_for'));
+  assert.ok(KRONOS_ESSENTIALS_TEMPLATE.files['src/models.rs'].includes('next_donate_after'));
+
+  // Zero stale 6-rank references across all 4 plugin crates
+  for (const tpl of [KRONOS_RANKS_TEMPLATE, KRONOS_GUARD_TEMPLATE, KRONOS_REGIONS_TEMPLATE, KRONOS_ESSENTIALS_TEMPLATE]) {
+    for (const [rel, content] of Object.entries(tpl.files)) {
+      assert.ok(
+        !content.includes('player|vip|premium|legend|admin|owner'),
+        `Stale 6-rank usage string in ${tpl.id}/${rel}`,
+      );
+      assert.ok(!content.includes('[ADMIN]'), `Stale [ADMIN] prefix in ${tpl.id}/${rel}`);
+      assert.ok(!content.includes('next_rank_after'), `Deprecated next_rank_after in ${tpl.id}/${rel}`);
+    }
+  }
+});
+

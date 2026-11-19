@@ -325,7 +325,7 @@
         "rgb_chat": false,
         "custom_suffix": true,
         "fly_in_own_region": true,
-        "border_tier": 3,
+        "border_tier": 4,
         "summary": "25 домов, 16 приватов (1.3M), /repair all, эффект входа с титром, x2.25 XP"
       }
     },
@@ -360,7 +360,7 @@
         "rgb_chat": true,
         "custom_suffix": true,
         "fly_in_own_region": true,
-        "border_tier": 3,
+        "border_tier": 4,
         "summary": "32 дома, 20 приватов (2M), градиентный чат, бессмертие в своём привате, без КД чата"
       }
     },
@@ -396,7 +396,7 @@
         "rgb_chat": true,
         "custom_suffix": true,
         "fly_in_own_region": true,
-        "border_tier": 3,
+        "border_tier": 4,
         "summary": "Флагман: 50 домов, 30 приватов (3.5M), 0 КД на всё, аура KRONOS, x3.0 XP, VIP-лаундж"
       }
     },
@@ -418,7 +418,8 @@
         "kronos.staff.chat",
         "kronos.guard.warn",
         "kronos.guard.mute.2h",
-        "kronos.guard.inspect"
+        "kronos.guard.inspect",
+        "kronos.guard.bypass_chat"
       ],
       "perks": {
         "max_homes": 8,
@@ -563,7 +564,9 @@
         "kronos.staff.hr.panel",
         "kronos.staff.hr.recruit",
         "kronos.staff.hr.audit",
-        "kronos.ranks.assign.moderation"
+        "kronos.ranks.assign.moderation",
+        "kronos.guard.mute.7d",
+        "kronos.guard.tempban.14d"
       ],
       "perks": {
         "max_homes": 30,
@@ -613,7 +616,7 @@
         "rgb_chat": true,
         "custom_suffix": true,
         "fly_in_own_region": true,
-        "border_tier": 3,
+        "border_tier": 4,
         "summary": "Отдел Выживания: /setspawn, /setwarp, полный контроль приватов, откатов и ивентов"
       }
     },
@@ -649,7 +652,7 @@
         "rgb_chat": true,
         "custom_suffix": true,
         "fly_in_own_region": true,
-        "border_tier": 3,
+        "border_tier": 4,
         "summary": "Тех. отдел: конфиги, WASM-плагины, диагностика, /ipban, управление правами"
       }
     },
@@ -684,7 +687,7 @@
         "rgb_chat": true,
         "custom_suffix": true,
         "fly_in_own_region": true,
-        "border_tier": 3,
+        "border_tier": 4,
         "summary": "Руководство (Зам. Владельца): управление всеми отделами, назначение админов и доната"
       }
     },
@@ -717,7 +720,7 @@
         "rgb_chat": true,
         "custom_suffix": true,
         "fly_in_own_region": true,
-        "border_tier": 3,
+        "border_tier": 4,
         "summary": "Верховный статус проекта KRONOS: абсолютные права (*) на все модули и отделы"
       }
     }
