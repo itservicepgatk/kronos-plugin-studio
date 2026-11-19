@@ -15,7 +15,7 @@ export const App: React.FC = () => {
 
   const [project, setProject] = useState<PluginProject>({
     name: defaultTemplate.id,
-    version: '2.0.0',
+    version: '1.0.0',
     description: defaultTemplate.description,
     files: { ...defaultTemplate.files },
     activeFilePath: 'src/lib.rs',

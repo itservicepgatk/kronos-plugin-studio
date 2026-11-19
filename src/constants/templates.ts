@@ -1,7 +1,9 @@
 import { PluginTemplate } from '../types';
 import { KRONOS_ESSENTIALS_TEMPLATE } from './kronosEssentialsTemplate';
+import { KRONOS_REGIONS_TEMPLATE } from './kronosRegionsTemplate';
 
 export const STARTER_TEMPLATES: PluginTemplate[] = [
+  KRONOS_REGIONS_TEMPLATE,
   KRONOS_ESSENTIALS_TEMPLATE,
   {
     id: 'blank-plugin',
