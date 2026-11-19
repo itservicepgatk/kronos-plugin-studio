@@ -138,7 +138,7 @@ export const FileTree: React.FC<FileTreeProps> = ({
       <div className="p-3 border-t border-[#272730] bg-[#141418] text-[11px] text-gray-400 flex flex-col gap-1">
         <div className="flex items-center justify-between">
           <span>Target Architecture:</span>
-          <span className="font-mono text-emerald-400 bg-emerald-500/10 px-1 rounded">wasm32-wasip1</span>
+          <span className="font-mono text-emerald-400 bg-emerald-500/10 px-1 rounded">wasm32-wasip2</span>
         </div>
         <div className="flex items-center justify-between">
           <span>Host Runtime:</span>

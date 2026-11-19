@@ -6,12 +6,18 @@ Powered by **Google AI Studio** models (**Gemini 4 Argon** with Max Mode deep re
 
 ---
 
+## 📚 Essential Developer Links
+- **Official Plugin Templates & Core**: [https://github.com/UncleBugDev/kronos-plugins](https://github.com/UncleBugDev/kronos-plugins)
+- **AI Plugin Developer Guide**: [https://github.com/UncleBugDev/kronos-plugins/blob/main/AI_PLUGIN_DEV_GUIDE.md](https://github.com/UncleBugDev/kronos-plugins/blob/main/AI_PLUGIN_DEV_GUIDE.md)
+
+---
+
 ## 🌟 Key Features
 
 1. **AI-Driven Plugin Generation**:
    - Integrated with Google AI Studio Gemini API (`gemini-4-argon`, `gemini-4-hydrogen`, `gemini-2.5-pro`, `gemini-2.5-flash`).
    - Deep Reasoning **Max Mode** for complex architecture, state synchronization, and thread-safe data structures.
-   - Built-in knowledge base of Pumpkin WASM API, hooks (`on_player_join`, `on_player_chat`, `on_command`, `on_block_break`, `on_block_place`), permissions (`fs.read.data`, `fs.write.data`), and `wasm32-wasip1` standards.
+   - Built-in knowledge base of Pumpkin WASM API (**WASI Preview 2 Component Model**, target `wasm32-wasip2`), `pumpkin-plugin-api`, commands, events, permissions, and multi-version safety (Java 1.20.1–26.3).
 
 2. **One-Click File Application**:
    - When Gemini generates or updates code, click **"Apply All to Workspace"** to update all project files instantaneously.
@@ -21,23 +27,25 @@ Powered by **Google AI Studio** models (**Gemini 4 Argon** with Max Mode deep re
    - **Open / Resume .ZIP**: Drag-and-drop any previously downloaded `.zip` file into the browser window or click "Open .ZIP" to unpack all files and continue prompt-driven iteration.
 
 4. **Built-In Starter Templates**:
-   - **Minimal Starter**: Clean lifecycle boilerplate with logging and build configs.
-   - **Auth & Security Plugin**: Player registration (`/register`), login (`/login`), password hashing, and movement locks.
-   - **Tab & Ranks Plugin**: Tablist header/footer, prefix/suffix formatting, and permissions-based rank tiers (Owner, Admin, VIP, Player).
+   - **KRONOS Essentials**: Spawns, homes, warps, RTP, and back commands.
+   - **KRONOS Ranks**: 20-tier rank hierarchy, tablist formatting, prefixes, and permissions.
+   - **KRONOS Guard**: Combat tag, exploit prevention, and attack speed regulation.
+   - **KRONOS Regions**: Region claims, wand tool, and protection flags.
+   - **Minimal Starter**: Clean `pumpkin-plugin-api` boilerplate with `register_plugin!`.
 
 ---
 
 ## 🚀 Quick Start (Local Run)
 
 ### 1. Install Dependencies
-\`\`\`bash
+```bash
 npm install
-\`\`\`
+```
 
 ### 2. Run Development Server
-\`\`\`bash
+```bash
 npm run dev
-\`\`\`
+```
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ### 3. Set API Key
@@ -50,21 +58,21 @@ Click **"Set API Key"** in the top navigation bar and enter your Google AI Studi
 Once you download your plugin's `.zip` file from the app:
 
 1. **Unzip the plugin on your build machine or server**:
-   \`\`\`bash
+   ```bash
    unzip my-plugin.zip -d my-plugin
    cd my-plugin
-   \`\`\`
+   ```
 
-2. **Compile to WebAssembly (`wasm32-wasip1`)**:
-   \`\`\`bash
-   cargo build --target wasm32-wasip1 --release
-   \`\`\`
+2. **Compile to WebAssembly (`wasm32-wasip2`)**:
+   ```bash
+   cargo build --target wasm32-wasip2 --release
+   ```
 
 3. **Deploy to KRONOS Server**:
    Copy the resulting `.wasm` binary into the Pumpkin server's plugins directory:
-   \`\`\`bash
-   cp target/wasm32-wasip1/release/my_plugin.wasm /home/unclebug/pumpkin-server/plugins/
-   \`\`\`
+   ```bash
+   cp target/wasm32-wasip2/release/my_plugin.wasm /home/unclebug/pumpkin-server/plugins/
+   ```
    Pumpkin will automatically hot-reload or load the plugin on restart!
 
 ---
