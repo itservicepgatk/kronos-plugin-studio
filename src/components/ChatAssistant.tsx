@@ -53,6 +53,64 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
     "Add auto-save player data to JSON file",
   ];
 
+  const renderInlineFormatting = (line: string, keyPrefix: string) => {
+    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return parts.map((part, idx) => {
+      if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+        return (
+          <strong key={`${keyPrefix}-${idx}`} className="font-semibold text-gray-100">
+            {part.slice(2, -2)}
+          </strong>
+        );
+      }
+      if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+        return (
+          <code
+            key={`${keyPrefix}-${idx}`}
+            className="px-1 py-0.5 rounded bg-[#101015] border border-[#2d2d38] text-amber-300 font-mono text-[11px]"
+          >
+            {part.slice(1, -1)}
+          </code>
+        );
+      }
+      return <React.Fragment key={`${keyPrefix}-${idx}`}>{part}</React.Fragment>;
+    });
+  };
+
+  const renderMessageContent = (content: string) => {
+    const segments = content.split(/(```[\s\S]*?```)/g);
+    return segments.map((segment, segIdx) => {
+      if (segment.startsWith('```') && segment.endsWith('```')) {
+        const inner = segment.slice(3, -3);
+        const firstNewline = inner.indexOf('\n');
+        const header = firstNewline >= 0 ? inner.slice(0, firstNewline).trim() : '';
+        const code = firstNewline >= 0 ? inner.slice(firstNewline + 1) : inner;
+        return (
+          <div
+            key={`code-${segIdx}`}
+            className="my-2 rounded-lg overflow-hidden border border-[#2d2d38] bg-[#101015]"
+          >
+            {header && (
+              <div className="px-2.5 py-1 text-[10px] font-mono text-amber-300 bg-[#16161d] border-b border-[#272730]">
+                {header}
+              </div>
+            )}
+            <pre className="p-2.5 text-[11px] font-mono text-gray-200 overflow-x-auto leading-4">
+              <code>{code}</code>
+            </pre>
+          </div>
+        );
+      }
+
+      if (!segment) return null;
+      return (
+        <div key={`txt-${segIdx}`} className="whitespace-pre-wrap break-words">
+          {renderInlineFormatting(segment, `s${segIdx}`)}
+        </div>
+      );
+    });
+  };
+
   return (
     <div className="w-96 border-l border-[#272730] bg-[#141418] flex flex-col h-full select-none text-xs">
       {/* Header */}
@@ -62,7 +120,9 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
           <span className="font-semibold text-gray-200">AI Architect ({model})</span>
         </div>
         <button
+          type="button"
           onClick={onClearChat}
+          aria-label="Clear chat history"
           className="p-1 text-gray-500 hover:text-gray-300 rounded"
           title="Clear Chat History"
         >
@@ -71,7 +131,7 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
       </div>
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div className="flex-1 overflow-y-auto p-3 space-y-3 select-text">
         {messages.map((msg) => {
           const isUser = msg.role === 'user';
           const hasFiles = msg.extractedFiles && Object.keys(msg.extractedFiles).length > 0;
@@ -87,13 +147,13 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
               </div>
 
               <div
-                className={`max-w-[90%] p-3 rounded-xl leading-relaxed whitespace-pre-wrap ${
+                className={`max-w-[92%] p-3 rounded-xl leading-relaxed break-words ${
                   isUser
                     ? 'bg-amber-500/10 border border-amber-500/20 text-gray-200'
                     : 'bg-[#1b1b22] border border-[#2d2d38] text-gray-300'
                 }`}
               >
-                {msg.content}
+                {renderMessageContent(msg.content)}
 
                 {/* If AI proposed file updates, display one-click Apply button */}
                 {hasFiles && (
@@ -108,6 +168,7 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
                       ))}
                     </ul>
                     <button
+                      type="button"
                       onClick={() => onApplyFiles(msg.extractedFiles!)}
                       className="mt-1 flex items-center justify-center gap-1.5 w-full py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-semibold text-xs rounded-lg transition-colors shadow-sm"
                     >
@@ -136,6 +197,7 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
         {quickPrompts.map((q) => (
           <button
             key={q}
+            type="button"
             onClick={() => onSendMessage(q)}
             disabled={isLoading}
             className="text-[10px] bg-[#1c1c24] hover:bg-[#252532] text-gray-400 hover:text-amber-300 px-2 py-0.5 rounded border border-[#2d2d38] transition-colors truncate max-w-full"
@@ -149,6 +211,7 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
       <form onSubmit={handleSubmit} className="p-3 border-t border-[#272730] bg-[#141418] flex gap-2">
         <input
           type="text"
+          aria-label="Message AI Architect"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Describe feature, command, or bug to fix..."
@@ -157,6 +220,7 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
         />
         <button
           type="submit"
+          aria-label="Send message"
           disabled={isLoading || !input.trim()}
           className="p-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:hover:bg-amber-500 text-black rounded-lg transition-colors"
         >

@@ -62,7 +62,7 @@ Required capabilities in plugin metadata or config:
 `;
 
 export const SYSTEM_PROMPT_GEMINI = `
-You are the KRONOS AI Plugin Architect, powered by Gemini 4 Argon & Hydrogen.
+You are the KRONOS AI Plugin Architect, powered by Gemini.
 Your mission is to generate, refine, and debug WebAssembly (WASM) Rust plugins for the KRONOS / Pumpkin Minecraft server.
 
 ${PUMPKIN_WASM_KNOWLEDGE_BASE}

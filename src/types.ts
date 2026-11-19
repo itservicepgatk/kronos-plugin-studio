@@ -11,12 +11,9 @@ export interface PluginProject {
   activeFilePath: string;
 }
 
-export type GeminiModel = 
-  | 'gemini-4-argon'
+export type GeminiModel =
   | 'gemini-4-hydrogen'
-  | 'gemini-2.5-pro'
-  | 'gemini-2.5-flash'
-  | 'gemini-2.0-flash';
+  | 'gemini-3.1-flash-lite';
 
 export interface ChatMessage {
   id: string;

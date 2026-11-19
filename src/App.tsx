@@ -3,7 +3,6 @@ import { Header } from './components/Header';
 import { FileTree } from './components/FileTree';
 import { CodeEditor } from './components/CodeEditor';
 import { ChatAssistant } from './components/ChatAssistant';
-import { ApiKeyModal } from './components/ApiKeyModal';
 import { TemplateModal } from './components/TemplateModal';
 import { STARTER_TEMPLATES } from './constants/templates';
 import { downloadProjectAsZip, loadProjectFromZip } from './services/zip';
@@ -22,10 +21,8 @@ export const App: React.FC = () => {
     activeFilePath: 'src/lib.rs',
   });
 
-  const [model, setModel] = useState<GeminiModel>('gemini-4-argon');
+  const [model, setModel] = useState<GeminiModel>('gemini-3.1-flash-lite');
   const [maxMode, setMaxMode] = useState<boolean>(true);
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('kronos_gemini_api_key') || '');
-  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
 
   // Chat State
@@ -33,17 +30,11 @@ export const App: React.FC = () => {
     {
       id: 'welcome',
       role: 'assistant',
-      content: `👋 Welcome to **KRONOS Plugin Studio**!\n\nI am configured to architect WebAssembly plugins for our Rust-powered Minecraft server (Pumpkin 26.3). I compile to \`wasm32-wasip1\` and generate pure, efficient Rust code.\n\nAsk me to add commands, custom event handlers, player data storage, tab ranks, or menus. You can download the project as a **.ZIP** at any time or drop an existing ZIP into the window to resume working!`,
+      content: `Welcome to **KRONOS Plugin Studio**!\n\nI am configured to architect WebAssembly plugins for your Rust-powered Minecraft server (Pumpkin 26.3), compiling to \`wasm32-wasip1\` with pure Rust code.\n\nAsk me directly right here to add commands, event handlers, player data storage, tab ranks, or menus. You can download the project as a **.ZIP** at any time or drop an existing ZIP into the window to resume working.`,
       timestamp: Date.now(),
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
-
-  // Save API key to localStorage
-  const handleSaveApiKey = (newKey: string) => {
-    setApiKey(newKey);
-    localStorage.setItem('kronos_gemini_api_key', newKey);
-  };
 
   // Switch active file
   const handleSelectFile = (path: string) => {
@@ -131,7 +122,15 @@ export const App: React.FC = () => {
         },
       ]);
     } catch (err: any) {
-      alert(`Failed to load ZIP archive: ${err.message}`);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: 'system',
+          content: `⚠️ Failed to load ZIP archive: ${err?.message || 'Invalid archive'}`,
+          timestamp: Date.now(),
+        },
+      ]);
     }
   };
 
@@ -146,12 +145,11 @@ export const App: React.FC = () => {
     }
   };
 
-  // Send message to Gemini
+  // Send message to server-side Gemini endpoint
   const handleSendMessage = async (text: string) => {
-    if (!apiKey) {
-      setIsApiKeyModalOpen(true);
-      return;
-    }
+    const history = messages
+      .filter((m) => m.id !== 'welcome' && (m.role === 'user' || m.role === 'assistant'))
+      .map(({ role, content }) => ({ role, content }));
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -166,10 +164,10 @@ export const App: React.FC = () => {
     try {
       const { text: replyText, files } = await sendPromptToGemini({
         model,
-        apiKey,
         userPrompt: text,
         project,
         maxMode,
+        history,
       });
 
       const assistantMsg: ChatMessage = {
@@ -233,8 +231,6 @@ export const App: React.FC = () => {
         setModel={setModel}
         maxMode={maxMode}
         setMaxMode={setMaxMode}
-        hasApiKey={!!apiKey}
-        onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
         onOpenTemplateModal={() => setIsTemplateModalOpen(true)}
         onDownloadZip={handleDownloadZip}
         onUploadZip={handleUploadZip}
@@ -271,13 +267,6 @@ export const App: React.FC = () => {
       </div>
 
       {/* Modals */}
-      <ApiKeyModal
-        isOpen={isApiKeyModalOpen}
-        onClose={() => setIsApiKeyModalOpen(false)}
-        apiKey={apiKey}
-        onSaveApiKey={handleSaveApiKey}
-      />
-
       <TemplateModal
         isOpen={isTemplateModalOpen}
         onClose={() => setIsTemplateModalOpen(false)}

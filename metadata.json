@@ -1,0 +1,8 @@
+{
+  "name": "KRONOS Plugin Studio",
+  "description": "Rust WASM Minecraft plugin IDE and AI architect for Pumpkin 26.3 servers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

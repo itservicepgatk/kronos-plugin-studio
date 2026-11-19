@@ -2,7 +2,6 @@ import React from 'react';
 import { 
   Download, 
   Upload, 
-  Key, 
   Sparkles, 
   Layers, 
   Cpu
@@ -14,8 +13,6 @@ interface HeaderProps {
   setModel: (model: GeminiModel) => void;
   maxMode: boolean;
   setMaxMode: (val: boolean) => void;
-  hasApiKey: boolean;
-  onOpenApiKeyModal: () => void;
   onOpenTemplateModal: () => void;
   onDownloadZip: () => void;
   onUploadZip: (file: File) => void;
@@ -27,8 +24,6 @@ export const Header: React.FC<HeaderProps> = ({
   setModel,
   maxMode,
   setMaxMode,
-  hasApiKey,
-  onOpenApiKeyModal,
   onOpenTemplateModal,
   onDownloadZip,
   onUploadZip,
@@ -71,42 +66,34 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="flex items-center gap-1.5 bg-[#1b1b22] border border-[#2d2d38] rounded-lg px-2.5 py-1 text-xs">
           <Cpu className="w-3.5 h-3.5 text-amber-400" />
           <select 
+            aria-label="Select Gemini model"
             value={model} 
             onChange={(e) => setModel(e.target.value as GeminiModel)}
             className="bg-transparent text-gray-200 font-medium focus:outline-none cursor-pointer"
           >
-            <option value="gemini-4-argon">Gemini 4 Argon (Reasoning)</option>
-            <option value="gemini-4-hydrogen">Gemini 4 Hydrogen (Fast)</option>
-            <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+            <option value="gemini-3.1-flash-lite" className="bg-[#1b1b22] text-gray-200">
+              Gemini 3.1 Flash Lite (Fast)
+            </option>
+            <option value="gemini-4-hydrogen" className="bg-[#1b1b22] text-gray-200">
+              Gemini 4 Hydrogen (Extended)
+            </option>
           </select>
         </div>
 
         {/* Max Mode Toggle */}
         <button
+          type="button"
+          aria-pressed={maxMode}
           onClick={() => setMaxMode(!maxMode)}
           className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
             maxMode 
               ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-black font-semibold shadow-lg shadow-amber-500/25 ring-1 ring-amber-400' 
               : 'bg-[#1b1b22] text-gray-400 hover:text-gray-200 border border-[#2d2d38]'
           }`}
-          title="Deep Reasoning Mode for complex architecture and algorithm generation"
+          title="Enable deep reasoning mode for complex plugin architecture"
         >
           <Sparkles className="w-3.5 h-3.5" />
           Max Mode
-        </button>
-
-        {/* API Key Button */}
-        <button
-          onClick={onOpenApiKeyModal}
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
-            hasApiKey
-              ? 'bg-[#1b1b22] text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10'
-              : 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30 animate-pulse'
-          }`}
-        >
-          <Key className="w-3.5 h-3.5" />
-          {hasApiKey ? 'Key Active' : 'Set API Key'}
         </button>
       </div>
 
