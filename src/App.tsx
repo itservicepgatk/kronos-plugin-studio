@@ -14,9 +14,9 @@ export const App: React.FC = () => {
   const defaultTemplate = STARTER_TEMPLATES[0];
 
   const [project, setProject] = useState<PluginProject>({
-    name: 'custom-plugin',
-    version: '0.1.0',
-    description: 'KRONOS Rust WASM Plugin',
+    name: defaultTemplate.id,
+    version: '1.0.0',
+    description: defaultTemplate.description,
     files: { ...defaultTemplate.files },
     activeFilePath: 'src/lib.rs',
   });
