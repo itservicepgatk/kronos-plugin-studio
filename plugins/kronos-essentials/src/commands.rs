@@ -328,8 +328,7 @@ fn handle_share_home_action(player: &Player, server: &Server, home_name: &str, f
                 let msg = legacy(&format!(
                     "§6§l✦ KRONOS §8» §e{} §aподелился с вами домом §d{}§a! ",
                     p_name, home
-                ));
-                msg.add_child(clickable_run(
+                )).add_child(clickable_run(
                     "§a§l[ТП]",
                     &format!("/home {}:{}", p_name, home),
                     &format!("§aТелепортироваться в общий дом §f{}:{}", p_name, home),

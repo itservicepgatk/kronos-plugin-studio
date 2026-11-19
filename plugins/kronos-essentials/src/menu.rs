@@ -14,17 +14,15 @@ use crate::storage::with_state;
 const LINE_SEP: &str = "§8§m────────────────────────────────────────────";
 
 pub fn clickable_run(label: &str, command: &str, hover: &str) -> TextComponent {
-    let tc = legacy(label);
-    tc.click_run_command(command);
-    tc.hover_show_text(legacy(hover));
-    tc
+    legacy(label)
+        .click_run_command(command)
+        .hover_show_text(legacy(hover))
 }
 
 pub fn clickable_suggest(label: &str, command: &str, hover: &str) -> TextComponent {
-    let tc = legacy(label);
-    tc.click_suggest_command(command);
-    tc.hover_show_text(legacy(hover));
-    tc
+    legacy(label)
+        .click_suggest_command(command)
+        .hover_show_text(legacy(hover))
 }
 
 pub struct HomesMenuSnapshot {
@@ -152,26 +150,31 @@ fn build_bedrock_hub_form(snap: &HomesMenuSnapshot) -> (Form, Vec<BedrockMenuAct
 }
 
 pub fn send_interactive_homes_chat_menu(player: &Player, snap: &HomesMenuSnapshot) {
+    player.send_system_message(legacy(LINE_SEP), false);
+
     let limit_text = if snap.unlimited {
         "∞".to_string()
     } else {
         snap.max_homes.to_string()
     };
 
-    player.send_system_message(legacy(LINE_SEP), false);
+    // Header line
     player.send_system_message(
         legacy(&format!(
-            "§6§l✦ KRONOS ESSENTIALS §8— §fНавигация §7(Дома: §e{}/{}§7)",
+            "§6§l✦ KRONOS HUB §8— §e{} §7(Точек дома: §e{}/{}§7, Общих: §d{}§7)",
+            snap.player_name,
             snap.homes.len(),
-            limit_text
+            limit_text,
+            snap.shared_with_me.len()
         )),
         false,
     );
 
+    // Combat warning if tagged
     if let Some(sec) = snap.combat_remaining {
         player.send_system_message(
             legacy(&format!(
-                "§c⚔ Вы в бою! Телепортация заблокирована на {}с",
+                " §c⚔ §lВНИМАНИЕ: §cВы находитесь в бою! Телепортация заблокирована на §e{}§cс.",
                 sec
             )),
             false,
@@ -179,34 +182,35 @@ pub fn send_interactive_homes_chat_menu(player: &Player, snap: &HomesMenuSnapsho
     }
 
     // Quick Action Bar
-    let bar = legacy(" ");
-    bar.add_child(clickable_run(
-        "§a§l[☄ RTP]",
-        "/rtp",
-        "§aСлучайная телепортация\n§7Автопоиск безопасной поверхности без лавы и удушья",
-    ));
-    bar.add_child(legacy(" "));
-    bar.add_child(clickable_run(
-        "§e§l[✦ Спавн]",
-        "/spawn",
-        "§eТелепортация на спавн сервера",
-    ));
-    bar.add_child(legacy(" "));
-    bar.add_child(clickable_run(
-        &format!("§b§l[⚑ Варпы ({})]", snap.warps_count),
-        "/warps",
-        "§bОткрыть список серверных варпов",
-    ));
-    bar.add_child(legacy(" "));
+    let mut bar = legacy(" ")
+        .add_child(clickable_run(
+            "§a§l[☄ RTP]",
+            "/rtp",
+            "§aСлучайная телепортация\n§7Автопоиск безопасной поверхности без лавы и удушья",
+        ))
+        .add_child(legacy(" "))
+        .add_child(clickable_run(
+            "§e§l[✦ Спавн]",
+            "/spawn",
+            "§eТелепортация на спавн сервера",
+        ))
+        .add_child(legacy(" "))
+        .add_child(clickable_run(
+            &format!("§b§l[⚑ Варпы ({})]", snap.warps_count),
+            "/warps",
+            "§bОткрыть список серверных варпов",
+        ))
+        .add_child(legacy(" "));
     if snap.has_back {
-        bar.add_child(clickable_run(
-            "§d§l[↩ Назад]",
-            "/back",
-            "§dВернуться на предыдущую позицию",
-        ));
-        bar.add_child(legacy(" "));
+        bar = bar
+            .add_child(clickable_run(
+                "§d§l[↩ Назад]",
+                "/back",
+                "§dВернуться на предыдущую позицию",
+            ))
+            .add_child(legacy(" "));
     }
-    bar.add_child(clickable_suggest(
+    bar = bar.add_child(clickable_suggest(
         "§6§l[+ Дом]",
         "/sethome ",
         "§6Создать новую точку дома\n§7Нажмите, чтобы ввести имя дома",
@@ -215,8 +219,7 @@ pub fn send_interactive_homes_chat_menu(player: &Player, snap: &HomesMenuSnapsho
 
     // Owned Homes
     if snap.homes.is_empty() {
-        let empty = legacy(" §7У вас пока нет домов. ");
-        empty.add_child(clickable_run(
+        let empty = legacy(" §7У вас пока нет домов. ").add_child(clickable_run(
             "§a[Создать дом 'home' здесь]",
             "/sethome home",
             "§aСоздать точку дома 'home' на текущих координатах",
@@ -225,19 +228,12 @@ pub fn send_interactive_homes_chat_menu(player: &Player, snap: &HomesMenuSnapsho
     } else {
         player.send_system_message(legacy(" §eВаши точки дома:"), false);
         for home in &snap.homes {
-            let row = legacy("  ");
-
             let star_label = if home.is_favorite { "§6★" } else { "§8☆" };
             let star_hover = if home.is_favorite {
                 "§6Главный дом (по умолчанию для /home)\n§7Нажмите, чтобы снять отметку"
             } else {
                 "§7Сделать главным домом ★"
             };
-            row.add_child(clickable_run(
-                star_label,
-                &format!("/home fav {}", home.name),
-                star_hover,
-            ));
 
             let shared_info = if home.shared_with.is_empty() {
                 "§7Доступ: §8только вы".to_string()
@@ -256,37 +252,42 @@ pub fn send_interactive_homes_chat_menu(player: &Player, snap: &HomesMenuSnapsho
                 shared_info
             );
 
-            row.add_child(legacy(" "));
-            row.add_child(clickable_run(
-                &format!("§f{} §e{}", home.icon, home.name),
-                &format!("/home {}", home.name),
-                &hover_details,
-            ));
-            row.add_child(legacy(&format!(
-                " §8({:.0}, {:.0}, {:.0}) ",
-                home.location.x, home.location.y, home.location.z
-            )));
-
-            row.add_child(clickable_run(
-                "§a[ТП]",
-                &format!("/home {}", home.name),
-                &format!("§aТелепортироваться в дом §e{}", home.name),
-            ));
-            row.add_child(legacy(" "));
-            row.add_child(clickable_suggest(
-                "§b[Друзья]",
-                &format!("/home share {} ", home.name),
-                &format!(
-                    "§bПоделиться домом §e{} §bс другом\n§7Команда: §f/home share {} <ник>",
-                    home.name, home.name
-                ),
-            ));
-            row.add_child(legacy(" "));
-            row.add_child(clickable_run(
-                "§c[✕]",
-                &format!("/delhome {}", home.name),
-                &format!("§cУдалить дом §e{} §cв один клик", home.name),
-            ));
+            let row = legacy("  ")
+                .add_child(clickable_run(
+                    star_label,
+                    &format!("/home fav {}", home.name),
+                    star_hover,
+                ))
+                .add_child(legacy(" "))
+                .add_child(clickable_run(
+                    &format!("§f{} §e{}", home.icon, home.name),
+                    &format!("/home {}", home.name),
+                    &hover_details,
+                ))
+                .add_child(legacy(&format!(
+                    " §8({:.0}, {:.0}, {:.0}) ",
+                    home.location.x, home.location.y, home.location.z
+                )))
+                .add_child(clickable_run(
+                    "§a[ТП]",
+                    &format!("/home {}", home.name),
+                    &format!("§aТелепортироваться в дом §e{}", home.name),
+                ))
+                .add_child(legacy(" "))
+                .add_child(clickable_suggest(
+                    "§b[Друзья]",
+                    &format!("/home share {} ", home.name),
+                    &format!(
+                        "§bПоделиться домом §e{} §bс другом\n§7Команда: §f/home share {} <ник>",
+                        home.name, home.name
+                    ),
+                ))
+                .add_child(legacy(" "))
+                .add_child(clickable_run(
+                    "§c[✕]",
+                    &format!("/delhome {}", home.name),
+                    &format!("§cУдалить дом §e{} §cв один клик", home.name),
+                ));
 
             player.send_system_message(row, false);
         }
@@ -294,8 +295,7 @@ pub fn send_interactive_homes_chat_menu(player: &Player, snap: &HomesMenuSnapsho
 
     // Shared Homes Available To This Player
     if !snap.shared_with_me.is_empty() {
-        let header = legacy(" §dОбщие дома друзей: ");
-        header.add_child(clickable_run(
+        let header = legacy(" §dОбщие дома друзей: ").add_child(clickable_run(
             "§7[Управление общими]",
             "/sharehome",
             "§dОткрыть подробный список всех общих домов",
@@ -303,7 +303,6 @@ pub fn send_interactive_homes_chat_menu(player: &Player, snap: &HomesMenuSnapsho
         player.send_system_message(header, false);
 
         for entry in snap.shared_with_me.iter().take(6) {
-            let row = legacy("  §d👥 ");
             let cmd = format!("/home {}:{}", entry.owner, entry.home.name);
             let hover = format!(
                 "§dОбщий дом §f{}:{}\n§7Мир: §f{}\n§7Координаты: §a{:.1}, {:.1}, {:.1}\n\n§a▶ Нажмите для телепортации",
@@ -314,13 +313,14 @@ pub fn send_interactive_homes_chat_menu(player: &Player, snap: &HomesMenuSnapsho
                 entry.home.location.y,
                 entry.home.location.z
             );
-            row.add_child(clickable_run(
-                &format!("§f{}§7:§d{}", entry.owner, entry.home.name),
-                &cmd,
-                &hover,
-            ));
-            row.add_child(legacy(" "));
-            row.add_child(clickable_run("§a[ТП]", &cmd, &hover));
+            let row = legacy("  §d👥 ")
+                .add_child(clickable_run(
+                    &format!("§f{}§7:§d{}", entry.owner, entry.home.name),
+                    &cmd,
+                    &hover,
+                ))
+                .add_child(legacy(" "))
+                .add_child(clickable_run("§a[ТП]", &cmd, &hover));
             player.send_system_message(row, false);
         }
     }
@@ -351,7 +351,6 @@ pub fn send_warps_menu(player: &Player, warps: &[WarpPoint]) {
         );
     } else {
         for warp in warps {
-            let row = legacy("  §6⚑ ");
             let desc_line = if warp.description.is_empty() {
                 String::new()
             } else {
@@ -368,12 +367,14 @@ pub fn send_warps_menu(player: &Player, warps: &[WarpPoint]) {
                 warp.uses
             );
             let cmd = format!("/warp {}", warp.name);
-            row.add_child(clickable_run(&format!("§b{}", warp.name), &cmd, &hover));
+            let mut row = legacy("  §6⚑ ")
+                .add_child(clickable_run(&format!("§b{}", warp.name), &cmd, &hover));
             if !warp.description.is_empty() {
-                row.add_child(legacy(&format!(" §8— §7{}", warp.description)));
+                row = row.add_child(legacy(&format!(" §8— §7{}", warp.description)));
             }
-            row.add_child(legacy(" "));
-            row.add_child(clickable_run("§a[ТП]", &cmd, &hover));
+            row = row
+                .add_child(legacy(" "))
+                .add_child(clickable_run("§a[ТП]", &cmd, &hover));
             player.send_system_message(row, false);
         }
     }
@@ -402,7 +403,6 @@ pub fn send_shared_homes_menu(
         );
     } else {
         for item in incoming_shared {
-            let row = legacy("  §d• ");
             let cmd = format!("/home {}:{}", item.owner, item.home.name);
             let hover = format!(
                 "§dВладелец: §f{}\n§7Дом: §e{}\n§7Координаты: §a{:.1}, {:.1}, {:.1}\n\n§a▶ Нажмите для телепортации",
@@ -412,16 +412,17 @@ pub fn send_shared_homes_menu(
                 item.home.location.y,
                 item.home.location.z
             );
-            row.add_child(clickable_run(
-                &format!("§f{}§7:§e{}", item.owner, item.home.name),
-                &cmd,
-                &hover,
-            ));
-            row.add_child(legacy(&format!(
-                " §8({:.0}, {:.0}, {:.0}) ",
-                item.home.location.x, item.home.location.y, item.home.location.z
-            )));
-            row.add_child(clickable_run("§a[ТП]", &cmd, &hover));
+            let row = legacy("  §d• ")
+                .add_child(clickable_run(
+                    &format!("§f{}§7:§e{}", item.owner, item.home.name),
+                    &cmd,
+                    &hover,
+                ))
+                .add_child(legacy(&format!(
+                    " §8({:.0}, {:.0}, {:.0}) ",
+                    item.home.location.x, item.home.location.y, item.home.location.z
+                )))
+                .add_child(clickable_run("§a[ТП]", &cmd, &hover));
             player.send_system_message(row, false);
         }
     }
@@ -434,27 +435,27 @@ pub fn send_shared_homes_menu(
             continue;
         }
         any_outbound = true;
-        let row = legacy(&format!("  §6⌂ §e{} §8→ ", home.name));
+        let mut row = legacy(&format!("  §6⌂ §e{} §8→ ", home.name));
         for (idx, friend) in home.shared_with.iter().enumerate() {
             if idx > 0 {
-                row.add_child(legacy("§7, "));
+                row = row.add_child(legacy("§7, "));
             }
-            row.add_child(legacy(&format!("§f{}", friend)));
-            row.add_child(clickable_run(
-                "§c[✕]",
-                &format!("/home unshare {} {}", home.name, friend),
-                &format!(
-                    "§cЗабрать доступ к дому §e{} §cу игрока §f{}",
-                    home.name, friend
-                ),
-            ));
+            row = row
+                .add_child(legacy(&format!("§f{}", friend)))
+                .add_child(clickable_run(
+                    "§c[✕]",
+                    &format!("/home unshare {} {}", home.name, friend),
+                    &format!(
+                        "§cЗабрать доступ к дому §e{} §cу игрока §f{}",
+                        home.name, friend
+                    ),
+                ));
         }
         player.send_system_message(row, false);
     }
 
     if !any_outbound {
-        let hint = legacy("  §7Вы пока не делились домами. ");
-        hint.add_child(clickable_suggest(
+        let hint = legacy("  §7Вы пока не делились домами. ").add_child(clickable_suggest(
             "§b[Поделиться домом]",
             "/sharehome ",
             "§bИспользование: §f/sharehome <дом> <ник_друга>",
@@ -483,17 +484,17 @@ fn send_tpa_inline_row(target: &Player, requester: &str, bring_here: bool) {
             requester
         )
     };
-    let row = legacy(&text);
-    row.add_child(clickable_run(
-        "§a§l[✔ Принять]",
-        "/tpaccept",
-        "§aПринять запрос телепортации",
-    ));
-    row.add_child(legacy(" "));
-    row.add_child(clickable_run(
-        "§c§l[✖ Отклонить]",
-        "/tpdeny",
-        "§cОтклонить запрос телепортации",
-    ));
+    let row = legacy(&text)
+        .add_child(clickable_run(
+            "§a§l[✔ Принять]",
+            "/tpaccept",
+            "§aПринять запрос телепортации",
+        ))
+        .add_child(legacy(" "))
+        .add_child(clickable_run(
+            "§c§l[✖ Отклонить]",
+            "/tpdeny",
+            "§cОтклонить запрос телепортации",
+        ));
     target.send_system_message(row, false);
 }

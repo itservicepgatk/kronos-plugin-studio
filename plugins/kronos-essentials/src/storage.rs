@@ -252,11 +252,10 @@ pub fn resolve_own_home(
         data.homes
             .iter_mut()
             .find(|h| h.name.eq_ignore_ascii_case(requested))
+    } else if let Some(pos) = data.homes.iter().position(|h| h.is_favorite) {
+        data.homes.get_mut(pos)
     } else {
-        data.homes
-            .iter_mut()
-            .find(|h| h.is_favorite)
-            .or_else(|| data.homes.first_mut())
+        data.homes.first_mut()
     }?;
 
     found.uses = found.uses.saturating_add(1);
