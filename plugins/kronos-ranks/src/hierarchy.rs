@@ -23,6 +23,14 @@ pub fn primary_rank<'a>(config: &'a RanksConfig, profile: &PlayerRankProfile) ->
     donate
 }
 
+/// Returns true if the player is a staff member (weight >= 100 or explicit staffchat permission).
+pub fn is_staff_member(config: &RanksConfig, profile: &PlayerRankProfile) -> bool {
+    primary_rank(config, profile).weight >= 100
+        || has_permission(config, profile, "kronos.staff.chat")
+        || has_permission(config, profile, "kronos.ranks.staffchat")
+        || has_permission(config, profile, "kronos.guard.staffchat")
+}
+
 /// Merges perks from BOTH `donate_rank` and `staff_rank` so staff members never lose their bought donate benefits!
 pub fn effective_perks(config: &RanksConfig, profile: &PlayerRankProfile) -> RankPerks {
     let d = &config
@@ -212,7 +220,7 @@ pub fn assign_rank(
     let expires = duration_secs.map(|s| now_ms.saturating_add(s.saturating_mul(1000)));
     let profile = store
         .profiles
-        .entry(target_key.clone())
+        .entry(target_key)
         .or_insert_with(|| PlayerRankProfile::new(target_name, now_ms));
     profile.player_name = target_name.to_string();
     profile.updated_at_ms = now_ms;
@@ -229,30 +237,25 @@ pub fn assign_rank(
     }
 
     let snapshot = profile.clone();
-    let audit_id = store.next_audit_id.max(1);
-    store.next_audit_id = audit_id + 1;
-    let duration_label = match duration_secs {
-        None => "навсегда".into(),
-        Some(s) => format_duration_ru(s),
-    };
-    store.audit_log.push(RankAuditEntry {
-        id: audit_id,
-        actor_name: actor_name.to_string(),
-        target_name: target_name.to_string(),
-        action: "SET".into(),
-        rank_id: new_rank.id.clone(),
-        duration_label,
-        ts_ms: now_ms,
-    });
-    if store.audit_log.len() > 500 {
-        store.audit_log.remove(0);
-    }
+    push_audit(
+        store,
+        actor_name,
+        target_name,
+        "SET",
+        &new_rank.id,
+        match duration_secs {
+            None => "навсегда".into(),
+            Some(s) => format_duration_ru(s),
+        },
+        now_ms,
+    );
 
     *dirty = true;
     Ok((snapshot, new_rank))
 }
 
 /// Removes either the staff role or resets donate rank back to `player`.
+#[allow(clippy::too_many_arguments)]
 pub fn remove_rank_track(
     config: &RanksConfig,
     store: &mut RanksStore,
@@ -340,22 +343,124 @@ pub fn remove_rank_track(
     profile.updated_at_ms = now_ms;
     let snapshot = profile.clone();
 
+    push_audit(
+        store,
+        actor_name,
+        target_name,
+        &format!("REMOVE_{}", track.to_uppercase()),
+        &removed_id,
+        "-".into(),
+        now_ms,
+    );
+    *dirty = true;
+    Ok(snapshot)
+}
+
+/// Resets BOTH tracks (`donate_rank = "player"`, `staff_rank = None`, `custom_suffix = None`)
+/// for `/rank reset <player>` with full hierarchy & donate-grant checks.
+#[allow(clippy::too_many_arguments)]
+pub fn reset_all_ranks(
+    config: &RanksConfig,
+    store: &mut RanksStore,
+    dirty: &mut bool,
+    actor_key: Option<&str>,
+    actor_name: &str,
+    actor_is_console: bool,
+    target_name: &str,
+    now_ms: u64,
+) -> Result<PlayerRankProfile, String> {
+    let target_key = normalize_key(target_name);
+    let actor_prof = actor_key.and_then(|k| store.profiles.get(k)).cloned();
+    let target_existing = store.profiles.get(&target_key).cloned();
+
+    if !actor_is_console {
+        let Some(ref actor) = actor_prof else {
+            return Err("§c✗ Недостаточно прав для полного сброса рангов.".into());
+        };
+        let actor_rank = primary_rank(config, actor);
+        if actor_rank.id != "owner" && !has_permission(config, actor, "*") {
+            if let Some(ref t) = target_existing {
+                if primary_rank(config, t).weight >= actor_rank.weight {
+                    return Err("§c✗ Нельзя сбросить ранг игрока выше или равного вам.".into());
+                }
+                if t.donate_rank != "player"
+                    && !has_permission(config, actor, "kronos.ranks.grant.donate")
+                {
+                    return Err(
+                        "§c✗ Полный сброс с донат-рангом доступен только Гл.Куратору и Владельцу."
+                            .into(),
+                    );
+                }
+                if let Some(ref staff_id) = t.staff_rank {
+                    if let Some(staff_def) = config.find(staff_id) {
+                        let dept_allowed = actor_rank
+                            .assignable_departments
+                            .iter()
+                            .any(|d| d.eq_ignore_ascii_case(staff_def.department.code()));
+                        if staff_def.weight > actor_rank.max_assignable_weight || !dept_allowed {
+                            return Err(format!(
+                                "§c✗ Вы не можете сбросить должность {} из отдела {}.",
+                                staff_def.display_name,
+                                staff_def.department.label_ru()
+                            ));
+                        }
+                    }
+                }
+            } else if !has_permission(config, actor, "kronos.ranks.grant.donate") {
+                return Err("§c✗ Полный сброс рангов доступен Гл.Куратору и Владельцу.".into());
+            }
+        }
+    }
+
+    let profile = store
+        .profiles
+        .entry(target_key)
+        .or_insert_with(|| PlayerRankProfile::new(target_name, now_ms));
+    let prev_primary = primary_rank(config, profile).id.clone();
+    profile.donate_rank = "player".into();
+    profile.donate_expires_at_ms = None;
+    profile.staff_rank = None;
+    profile.staff_expires_at_ms = None;
+    profile.custom_suffix = None;
+    profile.updated_at_ms = now_ms;
+    let snapshot = profile.clone();
+
+    push_audit(
+        store,
+        actor_name,
+        target_name,
+        "RESET",
+        &prev_primary,
+        "-".into(),
+        now_ms,
+    );
+    *dirty = true;
+    Ok(snapshot)
+}
+
+pub fn push_audit(
+    store: &mut RanksStore,
+    actor_name: &str,
+    target_name: &str,
+    action: &str,
+    rank_id: &str,
+    duration_label: String,
+    now_ms: u64,
+) {
     let audit_id = store.next_audit_id.max(1);
     store.next_audit_id = audit_id + 1;
     store.audit_log.push(RankAuditEntry {
         id: audit_id,
         actor_name: actor_name.to_string(),
         target_name: target_name.to_string(),
-        action: format!("REMOVE_{}", track.to_uppercase()),
-        rank_id: removed_id,
-        duration_label: "-".into(),
+        action: action.to_string(),
+        rank_id: rank_id.to_string(),
+        duration_label,
         ts_ms: now_ms,
     });
     if store.audit_log.len() > 500 {
         store.audit_log.remove(0);
     }
-    *dirty = true;
-    Ok(snapshot)
 }
 
 /// Checks temporary donate/staff grants and reverts any expired ones.

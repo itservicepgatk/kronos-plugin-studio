@@ -13,7 +13,6 @@ const EXPECTED_FILES = [
   'data/config.json',
   'src/commands.rs',
   'src/hierarchy.rs',
-  'src/host.rs',
   'src/lib.rs',
   'src/menu.rs',
   'src/models.rs',
@@ -21,11 +20,13 @@ const EXPECTED_FILES = [
   'src/tab_chat.rs',
 ];
 
-test('KRONOS Ranks standalone folder and template contain all 11 files with exact parity', () => {
+test('KRONOS Ranks standalone folder and template contain all 10 files with exact parity (no host.rs)', () => {
   assert.equal(KRONOS_RANKS_TEMPLATE.id, 'kronos-ranks');
   assert.deepEqual(Object.keys(KRONOS_RANKS_TEMPLATE.files).sort(), [...EXPECTED_FILES].sort());
+  assert.ok(!('src/host.rs' in KRONOS_RANKS_TEMPLATE.files));
 
   const pluginRoot = path.resolve('plugins/kronos-ranks');
+  assert.ok(!fs.existsSync(path.join(pluginRoot, 'src/host.rs')), 'Obsolete src/host.rs must be removed');
   for (const rel of EXPECTED_FILES) {
     const diskPath = path.join(pluginRoot, rel);
     assert.ok(fs.existsSync(diskPath), `Missing standalone file on disk: ${rel}`);
@@ -106,33 +107,80 @@ test('All 4 KRONOS plugins (Ranks, Guard, Regions, Essentials) share the exact s
   assert.ok(KRONOS_ESSENTIALS_TEMPLATE.files['src/storage.rs'].includes('kronos_ranks_bridge.json'));
 });
 
-test('KRONOS Ranks exports WASM hooks, cross-plugin FFI queries, 5 GUIs, commands, and Rust unit tests', () => {
+test('KRONOS Ranks uses official pumpkin-plugin-api 0.1.0 with zero legacy pumpkin_host FFI', () => {
+  const cargo = KRONOS_RANKS_TEMPLATE.files['Cargo.toml'];
+  assert.ok(cargo.includes('pumpkin-plugin-api = "0.1.0"'));
+  assert.ok(cargo.includes('tracing = "0.1"'));
+  assert.ok(cargo.includes('crate-type = ["cdylib"]'));
+
+  // Zero fictitious pumpkin_host FFI or raw C-pointer exports anywhere in kronos-ranks
+  for (const [rel, content] of Object.entries(KRONOS_RANKS_TEMPLATE.files)) {
+    assert.ok(!content.includes('pumpkin_host'), `Legacy pumpkin_host found in ${rel}`);
+    assert.ok(!content.includes('extern "C"'), `Raw extern "C" found in ${rel}`);
+    assert.ok(!content.includes('wasm_import_module'), `Legacy wasm_import_module found in ${rel}`);
+    assert.ok(!content.includes('read_str('), `Legacy read_str pointer helper found in ${rel}`);
+  }
+
   const lib = KRONOS_RANKS_TEMPLATE.files['src/lib.rs'];
-  for (const fnName of [
-    'pub extern "C" fn init',
-    'pub extern "C" fn cleanup',
-    'pub extern "C" fn on_player_join',
-    'pub extern "C" fn on_player_leave',
-    'pub extern "C" fn on_tick',
-    'pub extern "C" fn on_player_chat',
-    'pub extern "C" fn on_player_command',
-    'pub extern "C" fn on_menu_click',
-    'pub extern "C" fn kronos_get_rank_weight',
-    'pub extern "C" fn kronos_has_permission',
+  for (const symbol of [
+    'impl Plugin for KronosRanksPlugin',
+    'register_plugin!(KronosRanksPlugin)',
+    'PlayerJoinEvent',
+    'PlayerLeaveEvent',
+    'PlayerChatEvent',
+    'ServerTickEndEvent',
+    'BedrockFormResponseEvent',
+    'FS_READ_DATA',
+    'FS_WRITE_DATA',
     '#[cfg(test)]',
   ]) {
-    assert.ok(lib.includes(fnName), `Missing export/test in kronos-ranks lib.rs: ${fnName}`);
+    assert.ok(lib.includes(symbol), `Missing pumpkin-plugin-api symbol in lib.rs: ${symbol}`);
+  }
+
+  const tabChat = KRONOS_RANKS_TEMPLATE.files['src/tab_chat.rs'];
+  for (const api of [
+    'set_tab_list_name',
+    'set_tab_list_order',
+    'set_tab_list_header_footer',
+    'set_display_name',
+    'get_ping',
+    'format_chat_line',
+    'format_staff_chat_line',
+    'SoundCategory::Players',
+  ]) {
+    assert.ok(tabChat.includes(api), `Missing Tab/Chat API in tab_chat.rs: ${api}`);
   }
 
   const menu = KRONOS_RANKS_TEMPLATE.files['src/menu.rs'];
-  for (const menuId of [
-    'kronos_ranks_donate',
-    'kronos_ranks_staff',
-    'kronos_ranks_profile:',
-    'kronos_ranks_hr',
-    'kronos_ranks_audit',
+  for (const ui of [
+    'open_donate_showcase',
+    'open_staff_departments',
+    'open_player_profile',
+    'open_hr_panel',
+    'open_audit_menu',
+    'click_run_command',
+    'click_suggest_command',
+    'hover_show_text',
+    'SimpleForm',
+    'as_bedrock',
   ]) {
-    assert.ok(menu.includes(menuId), `Missing Chest GUI in kronos-ranks menu.rs: ${menuId}`);
+    assert.ok(menu.includes(ui), `Missing Java/Bedrock menu API in menu.rs: ${ui}`);
+  }
+
+  const commands = KRONOS_RANKS_TEMPLATE.files['src/commands.rs'];
+  for (const cmd of [
+    'kronos-ranks:player',
+    'kronos-ranks:staff',
+    'kronos-ranks:admin',
+    '"sc"',
+    '"staffchat"',
+    '"setrank"',
+    '"donate"',
+    '"ranks"',
+    '"staff"',
+    'reset_all_ranks',
+  ]) {
+    assert.ok(commands.includes(cmd), `Missing command/permission in commands.rs: ${cmd}`);
   }
 });
 

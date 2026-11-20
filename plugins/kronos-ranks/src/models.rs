@@ -159,6 +159,8 @@ pub struct StaffApplication {
     pub id: u64,
     pub applicant_key: String,
     pub applicant_name: String,
+    #[serde(default)]
+    pub desired_role: String,
     pub note: String,
     pub created_at_ms: u64,
     /// "pending" | "accepted" | "rejected"
@@ -184,10 +186,11 @@ pub struct RanksStore {
     pub profiles: HashMap<String, PlayerRankProfile>,
     pub applications: Vec<StaffApplication>,
     pub audit_log: Vec<RankAuditEntry>,
+    #[serde(default)]
     pub id_to_name: HashMap<String, String>,
 }
 
-/// Cross-plugin bridge entry written to `data/kronos_ranks_bridge.json`
+/// Cross-plugin bridge entry written to `kronos_ranks_bridge.json`
 /// so kronos-essentials, kronos-regions, and kronos-guard can read unified player ranks directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeRankSnapshot {
@@ -202,6 +205,51 @@ pub struct BridgeRankSnapshot {
     pub max_region_volume: u64,
 }
 
+#[derive(Debug, Clone)]
+pub enum BedrockRankAction {
+    OpenDonate,
+    OpenStaff,
+    OpenProfile(String),
+    OpenHr,
+    OpenAudit,
+    ShowRankDetails(String),
+    AcceptApplication(u64),
+    RejectApplication(u64),
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingBedrockRankForm {
+    pub player_key: String,
+    pub actions: Vec<BedrockRankAction>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RanksState {
+    pub data_folder: String,
+    pub config: RanksConfig,
+    pub store: RanksStore,
+    pub pending_forms: HashMap<u32, PendingBedrockRankForm>,
+    pub anim_frame: usize,
+    pub tick_counter: u64,
+    pub dirty: bool,
+    pub last_autosave_ms: u64,
+}
+
+impl RanksState {
+    pub fn new(data_folder: String, config: RanksConfig, store: RanksStore, now_ms: u64) -> Self {
+        Self {
+            data_folder,
+            config,
+            store,
+            pending_forms: HashMap::new(),
+            anim_frame: 0,
+            tick_counter: 0,
+            dirty: false,
+            last_autosave_ms: now_ms,
+        }
+    }
+}
+
 pub fn parse_duration_seconds(input: &str) -> Result<Option<u64>, ()> {
     let raw = input.trim().to_lowercase();
     if raw.is_empty() {
@@ -212,7 +260,11 @@ pub fn parse_duration_seconds(input: &str) -> Result<Option<u64>, ()> {
     }
     if let Some(num) = raw.strip_suffix("mo") {
         let v: u64 = num.parse().map_err(|_| ())?;
-        return if v > 0 { Ok(Some(v.saturating_mul(2_592_000))) } else { Err(()) };
+        return if v > 0 {
+            Ok(Some(v.saturating_mul(2_592_000)))
+        } else {
+            Err(())
+        };
     }
     let mut chars = raw.chars();
     let Some(unit) = chars.next_back() else {
