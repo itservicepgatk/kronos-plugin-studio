@@ -17,17 +17,15 @@ use crate::tab_chat::{legacy, play_click_sound, resolved_suffix};
 const LINE_SEP: &str = "§8§m────────────────────────────────────────────";
 
 pub fn clickable_run(label: &str, command: &str, hover: &str) -> TextComponent {
-    let tc = legacy(label);
-    tc.click_run_command(command);
-    tc.hover_show_text(legacy(hover));
-    tc
+    legacy(label)
+        .click_run_command(command)
+        .hover_show_text(legacy(hover))
 }
 
 pub fn clickable_suggest(label: &str, command: &str, hover: &str) -> TextComponent {
-    let tc = legacy(label);
-    tc.click_suggest_command(command);
-    tc.hover_show_text(legacy(hover));
-    tc
+    legacy(label)
+        .click_suggest_command(command)
+        .hover_show_text(legacy(hover))
 }
 
 fn open_bedrock_form(
@@ -129,24 +127,24 @@ pub fn open_donate_showcase(
         false,
     );
 
-    let nav = legacy(" ");
-    nav.add_child(clickable_run(
-        "§e§l[★ Мой профиль]",
-        "/rank info",
-        "§eОткрыть вашу Dual-Track карточку рангов и лимитов",
-    ));
-    nav.add_child(legacy(" "));
-    nav.add_child(clickable_run(
-        "§b§l[⚑ Команда Стаффа]",
-        "/staff",
-        "§bПосмотреть 9 должностей в 5 отделах и кто онлайн",
-    ));
-    nav.add_child(legacy(" "));
-    nav.add_child(clickable_run(
-        "§7[Список 20 рангов]",
-        "/rank list",
-        "§7Показать полный список всех 20 рангов с весами",
-    ));
+    let nav = legacy(" ")
+        .add_child(clickable_run(
+            "§e§l[★ Мой профиль]",
+            "/rank info",
+            "§eОткрыть вашу Dual-Track карточку рангов и лимитов",
+        ))
+        .add_child(legacy(" "))
+        .add_child(clickable_run(
+            "§b§l[⚑ Команда Стаффа]",
+            "/staff",
+            "§bПосмотреть 9 должностей в 5 отделах и кто онлайн",
+        ))
+        .add_child(legacy(" "))
+        .add_child(clickable_run(
+            "§7[Список 20 рангов]",
+            "/rank list",
+            "§7Показать полный список всех 20 рангов с весами",
+        ));
     player.send_system_message(nav, false);
 
     for rank in &donate_ranks {
@@ -154,28 +152,28 @@ pub fn open_donate_showcase(
         let mark = if is_current { "§a✔ " } else { "§6▸ " };
         let hover = build_rank_hover_tooltip(rank, config);
 
-        let row = legacy(&format!("  {}", mark));
-        row.add_child(clickable_run(
-            &format!("{} §f{}", rank.prefix.trim(), rank.display_name),
-            &format!("/rank info {}", viewer_name),
-            &hover,
-        ));
-        row.add_child(legacy(&format!(
-            " §8— §e{} ₽ §8| §7Дома: §a{} §8| §7Приваты: §b{}",
-            rank.price_rub, rank.perks.max_homes, rank.perks.max_regions
-        )));
+        let mut row = legacy(&format!("  {}", mark))
+            .add_child(clickable_run(
+                &format!("{} §f{}", rank.prefix.trim(), rank.display_name),
+                &format!("/rank info {}", viewer_name),
+                &hover,
+            ))
+            .add_child(legacy(&format!(
+                " §8— §e{} ₽ §8| §7Дома: §a{} §8| §7Приваты: §b{}",
+                rank.price_rub, rank.perks.max_homes, rank.perks.max_regions
+            )));
         if is_current {
-            row.add_child(legacy(" §a[АКТИВЕН]"));
+            row = row.add_child(legacy(" §a[АКТИВЕН]"));
         }
         player.send_system_message(row, false);
     }
 
-    let footer = legacy(&format!(" §7Покупка: §b{} §8| ", config.store_url));
-    footer.add_child(clickable_suggest(
-        "§6[Установить суффикс]",
-        "/rank suffix ",
-        "§6Доступно с ранга §5[EMPEROR]\n§7Команда: §f/rank suffix <текст|clear>",
-    ));
+    let footer = legacy(&format!(" §7Покупка: §b{} §8| ", config.store_url))
+        .add_child(clickable_suggest(
+            "§6[Установить суффикс]",
+            "/rank suffix ",
+            "§6Доступно с ранга §5[EMPEROR]\n§7Команда: §f/rank suffix <текст|clear>",
+        ));
     player.send_system_message(footer, false);
     player.send_system_message(legacy(LINE_SEP), false);
 }
@@ -261,40 +259,43 @@ pub fn open_staff_departments(
         false,
     );
 
-    let bar = legacy(" ");
-    bar.add_child(clickable_suggest(
-        "§a§l[✉ Подать заявку]",
-        "/staff apply trainee ",
-        "§aПодать заявку в Отдел Набора (HR)\n§7Использование: §f/staff apply <должность> <о_себе>",
-    ));
-    bar.add_child(legacy(" "));
-    bar.add_child(clickable_run(
-        "§e[Кто онлайн]",
-        "/staff online",
-        "§eПоказать всех сотрудников стаффа сейчас в сети",
-    ));
-    if can_hr {
-        bar.add_child(legacy(" "));
-        bar.add_child(clickable_run(
-            "§d§l[HR-панель]",
-            "/staff hr",
-            "§dОткрыть список заявок в стафф (приём/отказ в 1 клик)",
+    let mut bar = legacy(" ")
+        .add_child(clickable_suggest(
+            "§a§l[✉ Подать заявку]",
+            "/staff apply trainee ",
+            "§aПодать заявку в Отдел Набора (HR)\n§7Использование: §f/staff apply <должность> <о_себе>",
+        ))
+        .add_child(legacy(" "))
+        .add_child(clickable_run(
+            "§e[Кто онлайн]",
+            "/staff online",
+            "§eПоказать всех сотрудников стаффа сейчас в сети",
         ));
+    if can_hr {
+        bar = bar
+            .add_child(legacy(" "))
+            .add_child(clickable_run(
+                "§d§l[HR-панель]",
+                "/staff hr",
+                "§dОткрыть список заявок в стафф (приём/отказ в 1 клик)",
+            ));
     }
     if can_audit {
-        bar.add_child(legacy(" "));
-        bar.add_child(clickable_run(
-            "§6[Аудит]",
-            "/staff audit",
-            "§6Открыть журнал последних назначений и снятий",
-        ));
+        bar = bar
+            .add_child(legacy(" "))
+            .add_child(clickable_run(
+                "§6[Аудит]",
+                "/staff audit",
+                "§6Открыть журнал последних назначений и снятий",
+            ));
     }
-    bar.add_child(legacy(" "));
-    bar.add_child(clickable_run(
-        "§6[Донат]",
-        "/donate",
-        "§6Перейти к витрине 10 донат-привилегий",
-    ));
+    bar = bar
+        .add_child(legacy(" "))
+        .add_child(clickable_run(
+            "§6[Донат]",
+            "/donate",
+            "§6Перейти к витрине 10 донат-привилегий",
+        ));
     player.send_system_message(bar, false);
 
     for rank in &staff_ranks {
@@ -307,17 +308,17 @@ pub fn open_staff_departments(
         };
         let hover = build_rank_hover_tooltip(rank, config);
 
-        let row = legacy("  §8▸ ");
-        row.add_child(clickable_suggest(
-            &format!("{} §7(вес §e{}§7)", rank.prefix.trim(), rank.weight),
-            &format!("/staff apply {} ", rank.id),
-            &hover,
-        ));
-        row.add_child(legacy(&format!(
-            " §8| {} §8| §7Онлайн: {}",
-            rank.department.label_ru(),
-            online_text
-        )));
+        let row = legacy("  §8▸ ")
+            .add_child(clickable_suggest(
+                &format!("{} §7(вес §e{}§7)", rank.prefix.trim(), rank.weight),
+                &format!("/staff apply {} ", rank.id),
+                &hover,
+            ))
+            .add_child(legacy(&format!(
+                " §8| {} §8| §7Онлайн: {}",
+                rank.department.label_ru(),
+                online_text
+            )));
         player.send_system_message(row, false);
     }
 
@@ -414,25 +415,26 @@ pub fn open_player_profile(
         );
     }
 
-    let actions = legacy(" ");
-    actions.add_child(clickable_run(
-        "§6[Витрина доната]",
-        "/donate",
-        "§6Посмотреть все 10 донат-привилегий",
-    ));
-    actions.add_child(legacy(" "));
-    actions.add_child(clickable_run(
-        "§b[Отделы стаффа]",
-        "/staff",
-        "§bПосмотреть иерархию отделов стаффа",
-    ));
-    if perks.custom_suffix {
-        actions.add_child(legacy(" "));
-        actions.add_child(clickable_suggest(
-            "§d[Сменить суффикс]",
-            "/rank suffix ",
-            "§dУстановить кастомный суффикс в чате и Табе",
+    let mut actions = legacy(" ")
+        .add_child(clickable_run(
+            "§6[Витрина доната]",
+            "/donate",
+            "§6Посмотреть все 10 донат-привилегий",
+        ))
+        .add_child(legacy(" "))
+        .add_child(clickable_run(
+            "§b[Отделы стаффа]",
+            "/staff",
+            "§bПосмотреть иерархию отделов стаффа",
         ));
+    if perks.custom_suffix {
+        actions = actions
+            .add_child(legacy(" "))
+            .add_child(clickable_suggest(
+                "§d[Сменить суффикс]",
+                "/rank suffix ",
+                "§dУстановить кастомный суффикс в чате и Табе",
+            ));
     }
     player.send_system_message(actions, false);
     player.send_system_message(legacy(LINE_SEP), false);
@@ -511,17 +513,17 @@ pub fn open_hr_panel(player: &Player, applications: &[StaffApplication]) {
             let row = legacy(&format!(
                 "  §d#{} §f{} §8(§e{}§8): §7{} ",
                 app.id, app.applicant_name, role, app.note
-            ));
-            row.add_child(clickable_run(
+            ))
+            .add_child(clickable_run(
                 "§a§l[✔ Принять]",
                 &format!("/staff hr accept {}", app.id),
                 &format!(
                     "§aОдобрить заявку #{} игрока §f{}\n§7Игрок будет назначен на §e{}",
                     app.id, app.applicant_name, role
                 ),
-            ));
-            row.add_child(legacy(" "));
-            row.add_child(clickable_run(
+            ))
+            .add_child(legacy(" "))
+            .add_child(clickable_run(
                 "§c§l[✖ Отклонить]",
                 &format!("/staff hr reject {}", app.id),
                 &format!("§cОтклонить заявку #{} игрока §f{}", app.id, app.applicant_name),

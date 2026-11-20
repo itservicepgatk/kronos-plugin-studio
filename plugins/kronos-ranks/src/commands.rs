@@ -524,8 +524,7 @@ impl CommandHandler for StaffCmd {
                                 let alert = legacy(&format!(
                                     "§d§l✦ НОВАЯ ЗАЯВКА #{} §8» §f{} §7(§e{}§7): §f{} ",
                                     app_id, p_name, desired_role, note
-                                ));
-                                alert.add_child(clickable_run(
+                                )).add_child(clickable_run(
                                     "§a§l[Открыть HR]",
                                     "/staff hr",
                                     "§dОткрыть HR-панель заявок",
@@ -856,12 +855,12 @@ fn handle_rank_list(sender: &CommandSender) {
     ));
 
     // Donate row
-    let donate_line = legacy(" §6Донат: ");
+    let mut donate_line = legacy(" §6Донат: ");
     for (idx, r) in config.donate_ranks().iter().enumerate() {
         if idx > 0 {
-            donate_line.add_child(legacy("§8, "));
+            donate_line = donate_line.add_child(legacy("§8, "));
         }
-        donate_line.add_child(clickable_suggest(
+        donate_line = donate_line.add_child(clickable_suggest(
             &format!("{}§7({})", r.prefix.trim(), r.id),
             &format!("/rank set <ник> {}", r.id),
             &format!(
@@ -879,12 +878,12 @@ fn handle_rank_list(sender: &CommandSender) {
     sender.send_system_message(donate_line);
 
     // Staff row
-    let staff_line = legacy(" §bСтафф: ");
+    let mut staff_line = legacy(" §bСтафф: ");
     for (idx, r) in config.staff_ranks().iter().enumerate() {
         if idx > 0 {
-            staff_line.add_child(legacy("§8, "));
+            staff_line = staff_line.add_child(legacy("§8, "));
         }
-        staff_line.add_child(clickable_suggest(
+        staff_line = staff_line.add_child(clickable_suggest(
             &format!("{}§7({})", r.prefix.trim(), r.id),
             &format!("/rank set <ник> {}", r.id),
             &format!(

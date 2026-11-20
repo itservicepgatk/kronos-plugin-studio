@@ -340,7 +340,8 @@ mod tests {
         assert_eq!(perks.max_regions, 30);
         assert_eq!(perks.max_region_volume, 3_500_000);
         assert!(has_permission(&cfg, prof, "kronos.guard.warn"));
-        assert!(has_permission(&cfg, prof, "kronos.essentials.home.50"));
+        assert!(has_permission(&cfg, prof, "kronos.essentials.home.share"));
+        assert!(has_permission(&cfg, prof, "kronos.essentials.rtp.no_cooldown"));
 
         let bridge = build_bridge_map(&cfg, &store);
         let snap = bridge.get("steve").expect("bridge entry");
